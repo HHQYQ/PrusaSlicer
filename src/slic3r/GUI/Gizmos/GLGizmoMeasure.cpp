@@ -298,6 +298,8 @@ GLGizmoMeasure::GLGizmoMeasure(GLCanvas3D& parent, const std::string& icon_filen
 bool GLGizmoMeasure::on_mouse(const wxMouseEvent &mouse_event)
 {
     m_mouse_pos = { double(mouse_event.GetX()), double(mouse_event.GetY()) };
+    if (m_three_point_mode)
+        return on_circle_mouse(mouse_event);
 
     if (mouse_event.Moving()) {
         // only for sure 
@@ -468,6 +470,7 @@ bool GLGizmoMeasure::on_mouse(const wxMouseEvent &mouse_event)
 
 void GLGizmoMeasure::data_changed(bool is_serializing)
 {
+    clear_circle_points();
     m_parent.toggle_sla_auxiliaries_visibility(false, nullptr, -1);
 
     update_if_needed();
@@ -487,6 +490,24 @@ void GLGizmoMeasure::data_changed(bool is_serializing)
 
 bool GLGizmoMeasure::gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_position, bool shift_down, bool alt_down, bool control_down)
 {
+    if (m_three_point_mode) {
+        if (action == SLAGizmoEventType::Delete) {
+            clear_circle_points();
+        } else if (action == SLAGizmoEventType::Escape) {
+            if (m_circle_points.empty()) {
+                set_three_point_mode(false);
+            } else {
+                m_circle_points.pop_back();
+                m_constructed_circle.reset();
+                m_invalid_circle_pick = false;
+            }
+        } else {
+            return false;
+        }
+        m_parent.request_extra_frame();
+        return true;
+    }
+
     if (action == SLAGizmoEventType::ShiftDown) {
         if (m_shift_kar_filter.is_first()) {
             m_mode = EMode::PointSelection;
@@ -535,6 +556,9 @@ bool GLGizmoMeasure::on_init()
 void GLGizmoMeasure::on_set_state()
 {
     if (m_state == Off) {
+        m_three_point_mode = false;
+        clear_circle_points();
+        m_mouse_left_down = false;
         m_parent.toggle_sla_auxiliaries_visibility(true, nullptr, -1);
         m_shift_kar_filter.reset_count();
         m_curr_feature.reset();
@@ -588,6 +612,11 @@ void GLGizmoMeasure::on_render()
 //        return;
 
     update_if_needed();
+
+    if (m_three_point_mode) {
+        render_constructed_circle();
+        return;
+    }
 
     const Camera& camera = wxGetApp().plater()->get_camera();
     const float inv_zoom = (float)camera.get_inv_zoom();
@@ -1042,6 +1071,149 @@ void GLGizmoMeasure::on_render()
         glsafe(::glEnable(GL_CULL_FACE));
 
     render_dimensioning();
+}
+
+std::optional<Vec3d> GLGizmoMeasure::pick_circle_point(const Vec2d& mouse_pos) const
+{
+    if (!m_raycaster || !m_measuring)
+        return std::nullopt;
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    Vec3f hit, normal;
+    size_t facet = 0;
+    if (!m_raycaster->unproject_on_mesh(mouse_pos, Transform3d::Identity(), camera, hit, normal, nullptr, &facet))
+        return std::nullopt;
+
+    Vec3d position = hit.cast<double>();
+    const indexed_triangle_set& mesh = m_measuring->get_its();
+    if (!m_snap_circle_vertices || facet >= mesh.indices.size())
+        return position;
+
+    const Matrix4d projection_view = camera.get_projection_matrix().matrix() * camera.get_view_matrix().matrix();
+    const auto& viewport = camera.get_viewport();
+    const Vec2d screen_hit = TransformHelper::world_to_ss(position, projection_view, viewport);
+    double closest_distance_sq = 8.0 * 8.0;
+    const auto& triangle = mesh.indices[facet];
+    for (int i = 0; i < 3; ++i) {
+        const Vec3d vertex = mesh.vertices[triangle[i]].cast<double>();
+        const double distance_sq = (TransformHelper::world_to_ss(vertex, projection_view, viewport) - screen_hit).squaredNorm();
+        if (distance_sq < closest_distance_sq) {
+            closest_distance_sq = distance_sq;
+            position = vertex;
+        }
+    }
+    return position;
+}
+
+bool GLGizmoMeasure::on_circle_mouse(const wxMouseEvent& event)
+{
+    if (event.LeftDown() && !event.CmdDown()) {
+        const auto position = pick_circle_point(m_mouse_pos);
+        if (!position)
+            return false;
+
+        m_mouse_left_down = true;
+        if (m_circle_points.size() < 3) {
+            m_invalid_circle_pick = std::any_of(m_circle_points.begin(), m_circle_points.end(),
+                [&](const Vec3d& point) { return (point - *position).norm() <= EPSILON; });
+            if (!m_invalid_circle_pick && m_circle_points.size() == 2) {
+                m_constructed_circle = Measure::circle_from_three_points(m_circle_points[0], m_circle_points[1], *position);
+                m_invalid_circle_pick = !m_constructed_circle;
+            }
+            if (!m_invalid_circle_pick)
+                m_circle_points.push_back(*position);
+            m_parent.request_extra_frame();
+        }
+        return true;
+    }
+    if (event.LeftUp() && m_mouse_left_down) {
+        m_mouse_left_down = false;
+        return true;
+    }
+    if (event.Leaving())
+        m_mouse_left_down = false;
+    return event.Dragging() && m_mouse_left_down;
+}
+
+void GLGizmoMeasure::render_constructed_circle()
+{
+    GLShaderProgram* shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    const Transform3d& view = camera.get_view_matrix();
+    const auto render_point = [&](const Vec3d& point, const ColorRGBA& color) {
+        const Transform3d marker = Geometry::translation_transform(point) * Geometry::scale_transform(camera.get_inv_zoom());
+        shader->set_uniform("view_model_matrix", view * marker);
+        m_sphere.model.set_color(color);
+        m_sphere.model.render();
+    };
+
+    const bool restore_depth_test = ::glIsEnabled(GL_DEPTH_TEST);
+    glsafe(::glDisable(GL_DEPTH_TEST));
+    shader->start_using();
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+
+    if (m_constructed_circle) {
+        if (!m_circle_outline.is_initialized()) {
+            GLModel::Geometry outline;
+            outline.format = { GLModel::Geometry::EPrimitiveType::LineLoop, GLModel::Geometry::EVertexLayout::P3 };
+            constexpr unsigned int segments = 96;
+            outline.reserve_vertices(segments);
+            outline.reserve_indices(segments);
+            for (unsigned int i = 0; i < segments; ++i) {
+                const double angle = 2.0 * M_PI * i / segments;
+                outline.add_vertex(Vec3f(float(std::cos(angle)), float(std::sin(angle)), 0.f));
+                outline.add_index(i);
+            }
+            m_circle_outline.init_from(std::move(outline));
+        }
+
+        const auto [center, radius, normal] = m_constructed_circle->get_circle();
+        const Transform3d circle = Geometry::translation_transform(center) *
+            Eigen::Quaterniond::FromTwoVectors(Vec3d::UnitZ(), normal) * Geometry::scale_transform(radius);
+        shader->set_uniform("view_model_matrix", view * circle);
+        m_circle_outline.set_color(SELECTED_1ST_COLOR);
+        m_circle_outline.render();
+        render_point(center, SELECTED_2ND_COLOR);
+    } else if (!wxGetMouseState().LeftIsDown() && !ImGui::GetIO().WantCaptureMouse) {
+        if (const auto preview = pick_circle_point(m_mouse_pos))
+            render_point(*preview, GLVolume::SELECTED_COLOR);
+    }
+
+    for (const Vec3d& point : m_circle_points)
+        render_point(point, SELECTED_1ST_COLOR);
+    shader->stop_using();
+    if (restore_depth_test)
+        glsafe(::glEnable(GL_DEPTH_TEST));
+}
+
+void GLGizmoMeasure::clear_circle_points()
+{
+    m_circle_points.clear();
+    m_constructed_circle.reset();
+    m_invalid_circle_pick = false;
+}
+
+void GLGizmoMeasure::set_three_point_mode(bool enabled)
+{
+    m_three_point_mode = enabled;
+    clear_circle_points();
+    m_mouse_left_down = false;
+    m_selected_features.reset();
+    m_selected_sphere_raycasters.clear();
+    m_parent.remove_raycasters_for_picking(SceneRaycaster::EType::Gizmo);
+    m_raycasters.clear();
+    m_hover_id = -1;
+    m_curr_feature.reset();
+    m_curr_point_on_feature_position.reset();
+    m_last_circle.reset();
+    m_last_plane_idx = -1;
+    m_mode = EMode::FeatureSelection;
+    m_shift_kar_filter.reset_count();
+    restore_scene_raycasters_state();
+    update_measurement_result();
+    m_parent.request_extra_frame();
 }
 
 void GLGizmoMeasure::update_if_needed()
@@ -1816,6 +1988,31 @@ void GLGizmoMeasure::render_debug_dialog()
 }
 #endif // ENABLE_MEASURE_GIZMO_DEBUG
 
+void GLGizmoMeasure::render_circle_options()
+{
+    if (ImGui::Checkbox(_u8L("Snap to mesh vertices").c_str(), &m_snap_circle_vertices))
+        m_parent.request_extra_frame();
+    ImGuiPureWrap::text(_u8L("Select three points on the same circular edge.") +
+        " (" + std::to_string(m_circle_points.size()) + "/3)");
+    if (m_invalid_circle_pick)
+        ImGuiPureWrap::text(_u8L("Choose a different point. Points must be distinct and not nearly collinear."));
+
+    if (m_constructed_circle) {
+        const auto [center, radius, normal] = m_constructed_circle->get_circle();
+        const bool use_inches = wxGetApp().app_config->get_bool("use_inches");
+        const double scale = use_inches ? ObjectManipulation::mm_to_in : 1.0;
+        const std::string units = use_inches ? " " + _u8L("in") : " " + _u8L("mm");
+        ImGuiPureWrap::text(_u8L("Diameter") + ": " + format_double(2.0 * radius * scale) + units);
+        ImGuiPureWrap::text(_u8L("Radius") + ": " + format_double(radius * scale) + units);
+        ImGuiPureWrap::text(_u8L("Circle center") + ": " + format_vec3(center * scale) + units);
+    }
+
+    if (ImGuiPureWrap::button(_u8L("Restart selection"))) {
+        clear_circle_points();
+        m_parent.request_extra_frame();
+    }
+}
+
 void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit)
 {
     static std::optional<Measure::SurfaceFeature> last_feature;
@@ -1841,6 +2038,15 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
             last_h = win_h;
         if (last_y != y)
             last_y = y;
+    }
+
+    bool three_point_mode = m_three_point_mode;
+    if (ImGui::Checkbox(_u8L("Three-point circle").c_str(), &three_point_mode))
+        set_three_point_mode(three_point_mode);
+    if (m_three_point_mode) {
+        render_circle_options();
+        ImGuiPureWrap::end();
+        return;
     }
 
     if (ImGui::BeginTable("Commands", 2)) {

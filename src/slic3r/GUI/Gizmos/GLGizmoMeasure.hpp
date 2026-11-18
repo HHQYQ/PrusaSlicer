@@ -146,6 +146,20 @@ class GLGizmoMeasure : public GLGizmoBase
 
     void render_dimensioning();
 
+    bool m_three_point_mode{ false };
+    bool m_snap_circle_vertices{ true };
+    bool m_invalid_circle_pick{ false };
+    std::vector<Vec3d> m_circle_points;
+    std::optional<Measure::SurfaceFeature> m_constructed_circle;
+    GLModel m_circle_outline;
+
+    std::optional<Vec3d> pick_circle_point(const Vec2d& mouse_pos) const;
+    bool on_circle_mouse(const wxMouseEvent& event);
+    void render_constructed_circle();
+    void render_circle_options();
+    void clear_circle_points();
+    void set_three_point_mode(bool enabled);
+
 #if ENABLE_MEASURE_GIZMO_DEBUG
     void render_debug_dialog();
 #endif // ENABLE_MEASURE_GIZMO_DEBUG

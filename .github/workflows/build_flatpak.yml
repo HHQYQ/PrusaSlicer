@@ -2,6 +2,8 @@ name: Build flatpak
 
 on:
   push:
+    branches-ignore:
+      - codex/prusaslicer-2.9.7-three-point-circle
   workflow_dispatch:
 
 jobs:

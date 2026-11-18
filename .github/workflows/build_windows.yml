@@ -1,23 +1,117 @@
-name: Build windows
+name: Windows installer — three-point circle
 
 on:
   push:
+    branches:
+      - codex/prusaslicer-2.9.7-three-point-circle
   workflow_dispatch:
-    inputs:
-      create_pdb:
-        description: 'Zip pdbs'
-        default: false
-        type: boolean
-      create_installer:
-        description: 'Create installer'
-        default: false
-        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prusa-three-point-windows
+  cancel-in-progress: true
 
 jobs:
-  build_win:
-    uses: Prusa-Development/PrusaSlicer-Actions/.github/workflows/build_windows.yml@legacy
-    secrets: inherit
-    with:
-      actions_branch: legacy
-      create_pdb: ${{ inputs.create_pdb || false }}
-      create_installer: ${{ inputs.create_installer || false }}
+  installer:
+    runs-on: windows-2022
+    timeout-minutes: 175
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build PrusaSlicer dependencies
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%I\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          cmake -S deps -B deps-build -G "Visual Studio 17 2022" -A x64 -DDEP_DEBUG=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_CONFIGURATION_TYPES=Release
+          if errorlevel 1 exit /b 1
+          cmake --build deps-build --config Release
+          if errorlevel 1 exit /b 1
+
+      - name: Build PrusaSlicer 2.9.7
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%I\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 -DCMAKE_CONFIGURATION_TYPES=Release "-DCMAKE_PREFIX_PATH=%CD%\deps-build\destdir\usr\local" "-DCMAKE_INSTALL_PREFIX=%CD%\payload" -DSLIC3R_BUILD_TESTS=OFF
+          if errorlevel 1 exit /b 1
+          cmake --build build-win --config Release --parallel 2
+          if errorlevel 1 exit /b 1
+
+      - name: Compile translations and stage installer files
+        run: |
+          $env:Path = "C:\msys64\usr\bin;$env:Path"
+          if (!(Get-Command msgfmt.exe -ErrorAction SilentlyContinue)) {
+            & 'C:\msys64\usr\bin\pacman.exe' -S --needed --noconfirm gettext
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to install GNU gettext.' }
+          }
+          cmake --build build-win --config Release --target gettext_po_to_mo
+          if ($LASTEXITCODE -ne 0) { throw 'Translation compilation failed.' }
+          cmake --install build-win --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'Application staging failed.' }
+          $buildOutput = 'build-win\src\Release'
+          Copy-Item "$buildOutput\*.dll" -Destination payload
+          Copy-Item "$buildOutput\prusa-gcodeviewer.exe" -Destination payload
+          Copy-Item LICENSE -Destination 'payload\LICENSE.txt'
+          @(
+            'PrusaSlicer 2.9.7 — Three-Point Circle'
+            'Based on PrusaSlicer 2.9.7. This is an independent build.'
+            "Source and build scripts: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/tree/$env:GITHUB_SHA"
+            'License: GNU AGPL version 3 or later, see LICENSE.txt.'
+          ) | Set-Content -Encoding UTF8 'payload\Source.txt'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $redist = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64\Microsoft.VC143.CRT' } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (!$redist) { throw 'Microsoft VC143 runtime files were not found.' }
+          Copy-Item "$redist\*.dll" -Destination payload
+          foreach ($path in @('prusa-slicer.exe', 'prusa-slicer-console.exe', 'PrusaSlicer.dll',
+              'WebView2Loader.dll', 'libgmp-10.dll', 'libmpfr-4.dll',
+              'resources\localization\zh_CN\PrusaSlicer.mo')) {
+            if (!(Test-Path -LiteralPath "payload\$path")) { throw "Missing installer file: $path" }
+          }
+
+      - name: Package for Windows x64
+        run: |
+          $env:PRUSA_INSTALL_PAYLOAD = (Resolve-Path payload).Path
+          $env:PRUSA_INSTALL_OUTPUT = Join-Path $PWD 'installer-output'
+          New-Item -ItemType Directory -Path $env:PRUSA_INSTALL_OUTPUT -Force | Out-Null
+          $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          if (!$iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc 'build-utils\windows-three-point-circle.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
+
+      - name: Smoke test installer and installed application
+        run: |
+          $setup = (Resolve-Path 'installer-output\PrusaSlicer-2.9.7-Three-Point-Circle-x64-Setup.exe').Path
+          $installDir = Join-Path $env:RUNNER_TEMP 'PrusaThreePointTest'
+          $parameters = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', "/DIR=""$installDir""")
+          $install = Start-Process -FilePath $setup -ArgumentList $parameters -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exit code: $($install.ExitCode)" }
+          $installedCli = Join-Path $installDir 'prusa-slicer-console.exe'
+          $stdout = Join-Path $env:RUNNER_TEMP 'prusa-three-point-help.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'prusa-three-point-stderr.txt'
+          $app = Start-Process -FilePath $installedCli -ArgumentList '--help' -Wait -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Get-Content -LiteralPath $stdout,$stderr
+          if ($app.ExitCode -ne 0 -or !(Select-String -Path $stdout -Pattern '2\.9\.7' -Quiet)) {
+            throw "Installed PrusaSlicer smoke test failed. Exit code: $($app.ExitCode)"
+          }
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $setup -Leaf)" | Set-Content -Encoding ascii 'installer-output\SHA256.txt'
+          Get-Content 'installer-output\SHA256.txt'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrusaSlicer-2.9.7-Three-Point-Circle-Windows-x64
+          path: installer-output/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

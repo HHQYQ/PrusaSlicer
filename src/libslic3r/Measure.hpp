@@ -97,6 +97,9 @@ private:
 
 
 
+// Construct the circumcircle of three distinct points in world coordinates.
+std::optional<SurfaceFeature> circle_from_three_points(const Vec3d& a, const Vec3d& b, const Vec3d& c);
+
 class MeasuringImpl;
 
 

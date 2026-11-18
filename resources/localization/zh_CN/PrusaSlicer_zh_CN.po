@@ -2370,6 +2370,21 @@ msgstr ""
 msgid "Diameter"
 msgstr "直径"
 
+msgid "Three-point circle"
+msgstr "三点测圆"
+
+msgid "Snap to mesh vertices"
+msgstr "吸附到网格顶点"
+
+msgid "Select three points on the same circular edge."
+msgstr "在同一圆边上选取三个点。"
+
+msgid "Choose a different point. Points must be distinct and not nearly collinear."
+msgstr "请另选一点。三个点须互不重合，并避免接近共线。"
+
+msgid "Circle center"
+msgstr "圆心"
+
 #: src/libslic3r/PrintConfig.cpp:1479
 msgid ""
 "Enter your filament diameter here. Good precision is required, so use a "

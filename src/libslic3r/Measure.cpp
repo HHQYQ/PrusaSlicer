@@ -27,6 +27,36 @@ namespace Slic3r {
 namespace Measure {
 
 
+std::optional<SurfaceFeature> circle_from_three_points(const Vec3d& a, const Vec3d& b, const Vec3d& c)
+{
+    const Vec3d ab = b - a;
+    const Vec3d ac = c - a;
+    const double ab_length = ab.norm();
+    const double ac_length = ac.norm();
+    const double bc_length = (c - b).norm();
+    if (std::min({ ab_length, ac_length, bc_length }) <= EPSILON)
+        return std::nullopt;
+
+    const double longest_side = std::max({ ab_length, ac_length, bc_length });
+    Vec3d normal = ab.cross(ac);
+    const double area_twice = normal.norm();
+    // Near-collinear picks are too sensitive to small mouse errors.
+    if (area_twice <= 1e-4 * longest_side * longest_side)
+        return std::nullopt;
+
+    normal /= area_twice;
+    const Vec3d x_axis = ab / ab_length;
+    const Vec3d y_axis = normal.cross(x_axis);
+    const Vec2d center_2d = Geometry::circle_center(Vec2d(0., 0.), Vec2d(ab_length, 0.),
+        Vec2d(ac.dot(x_axis), ac.dot(y_axis)), 0.);
+    const Vec3d center = a + center_2d.x() * x_axis + center_2d.y() * y_axis;
+    const double radius = center_2d.norm();
+    if (!center.allFinite() || !std::isfinite(radius))
+        return std::nullopt;
+
+    return SurfaceFeature(SurfaceFeatureType::Circle, center, normal, std::nullopt, radius);
+}
+
 constexpr double feature_hover_limit = 0.5; // how close to a feature the mouse must be to highlight it
 
 static std::tuple<Vec3d, double, double> get_center_and_radius(const std::vector<Vec3d>& points, const Transform3d& trafo, const Transform3d& trafo_inv)
