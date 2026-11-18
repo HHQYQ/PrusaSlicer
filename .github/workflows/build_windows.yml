@@ -23,7 +23,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore compiled application files
+        id: app-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: payload
+          key: prusa-297-win2022-v143-x64-app-v1-${{ hashFiles('src/**', 'resources/**', 'deps/**', 'bundled_deps/**', 'cmake/**', 'CMakeLists.txt', 'version.inc') }}
+
+      - name: Restore compiled dependencies
+        if: ${{ steps.app-cache.outputs.cache-hit != 'true' }}
+        id: deps-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: deps-build/destdir/usr/local
+          key: prusa-297-win2022-v143-x64-deps-v1-${{ hashFiles('deps/**', 'cmake/modules/**') }}
+
       - name: Build PrusaSlicer dependencies
+        if: ${{ steps.app-cache.outputs.cache-hit != 'true' && steps.deps-cache.outputs.cache-hit != 'true' }}
         shell: cmd
         run: |
           for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%I\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
@@ -33,7 +49,15 @@ jobs:
           cmake --build deps-build --config Release
           if errorlevel 1 exit /b 1
 
+      - name: Save compiled dependencies
+        if: ${{ steps.app-cache.outputs.cache-hit != 'true' && steps.deps-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: deps-build/destdir/usr/local
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
+
       - name: Build PrusaSlicer 2.9.7
+        if: ${{ steps.app-cache.outputs.cache-hit != 'true' }}
         shell: cmd
         run: |
           for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%I\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
@@ -43,7 +67,8 @@ jobs:
           cmake --build build-win --config Release --parallel 2
           if errorlevel 1 exit /b 1
 
-      - name: Compile translations and stage installer files
+      - name: Compile translations and stage application files
+        if: ${{ steps.app-cache.outputs.cache-hit != 'true' }}
         run: |
           $env:Path = "C:\msys64\usr\bin;$env:Path"
           if (!(Get-Command msgfmt.exe -ErrorAction SilentlyContinue)) {
@@ -58,6 +83,16 @@ jobs:
           Copy-Item "$buildOutput\*.dll" -Destination payload
           Copy-Item "$buildOutput\prusa-gcodeviewer.exe" -Destination payload
           Copy-Item LICENSE -Destination 'payload\LICENSE.txt'
+
+      - name: Save compiled application files
+        if: ${{ steps.app-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: payload
+          key: ${{ steps.app-cache.outputs.cache-primary-key }}
+
+      - name: Stage installer metadata and Visual C++ runtime
+        run: |
           @(
             'PrusaSlicer 2.9.7 — Three-Point Circle'
             'Based on PrusaSlicer 2.9.7. This is an independent build.'
@@ -65,11 +100,16 @@ jobs:
             'License: GNU AGPL version 3 or later, see LICENSE.txt.'
           ) | Set-Content -Encoding UTF8 'payload\Source.txt'
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          $redist = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory |
-            Sort-Object { [version]$_.Name } -Descending |
-            ForEach-Object { Join-Path $_.FullName 'x64\Microsoft.VC143.CRT' } |
-            Where-Object { Test-Path -LiteralPath $_ } |
-            Select-Object -First 1
+          $redistRoot = Join-Path $vs 'VC\Redist\MSVC'
+          $redist = Join-Path $redistRoot 'v143\x64\Microsoft.VC143.CRT'
+          if (!(Test-Path -LiteralPath $redist -PathType Container)) {
+            $redist = Get-ChildItem -LiteralPath $redistRoot -Directory |
+              Where-Object { $_.Name -match '^\d+(?:\.\d+){1,3}$' } |
+              Sort-Object { [version]$_.Name } -Descending |
+              ForEach-Object { Join-Path $_.FullName 'x64\Microsoft.VC143.CRT' } |
+              Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
+              Select-Object -First 1
+          }
           if (!$redist) { throw 'Microsoft VC143 runtime files were not found.' }
           Copy-Item "$redist\*.dll" -Destination payload
           foreach ($path in @('prusa-slicer.exe', 'prusa-slicer-console.exe', 'PrusaSlicer.dll',
