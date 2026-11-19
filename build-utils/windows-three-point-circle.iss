@@ -1,6 +1,6 @@
 #define Payload GetEnv("PRUSA_INSTALL_PAYLOAD")
 #define Output GetEnv("PRUSA_INSTALL_OUTPUT")
-#define InstallerVersion "2.9.7.5"
+#define InstallerVersion "2.9.7.6"
 #if Payload == "" || Output == ""
   #error PRUSA_INSTALL_PAYLOAD and PRUSA_INSTALL_OUTPUT must be set.
 #endif

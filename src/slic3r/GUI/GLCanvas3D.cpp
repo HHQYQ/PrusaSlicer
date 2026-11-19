@@ -6207,17 +6207,16 @@ void GLCanvas3D::set_section_view(bool enabled, bool isometric)
 void GLCanvas3D::_orient_section_view(bool isometric)
 {
     m_section_view.isometric = isometric;
-    const Vec3d normal = m_section_view.normal();
-    Vec3d direction = normal;
+    // Keep the camera independent of which side of either plane is clipped.
+    const int axis = m_section_view.axis;
+    Vec3d direction = Vec3d::Zero();
     Vec3d up = Vec3d::UnitZ();
     if (isometric) {
-        direction = Vec3d(1.0, -1.0, 1.0);
-        direction[m_section_view.axis] = normal[m_section_view.axis];
-        if (m_section_view.compound)
-            direction[m_section_view.second_axis()] = m_section_view.second_normal()[m_section_view.second_axis()];
-        direction.normalize();
-    } else if (m_section_view.axis == 2) {
-        up = normal.z() * Vec3d::UnitY();
+        direction = Vec3d(1.0, -1.0, 1.0).normalized();
+    } else {
+        direction[axis] = axis == 1 ? -1.0 : 1.0;
+        if (axis == 2)
+            up = Vec3d::UnitY();
     }
 
     Camera& camera = wxGetApp().plater()->get_camera();
@@ -6328,7 +6327,9 @@ void GLCanvas3D::_render_section_controls()
                 : _u8L("Add a model to display a section.");
             ImGuiPureWrap::text_wrapped(status.c_str(), width);
         } else {
-            const bool compound_changed = ImGuiPureWrap::checkbox(_u8L("Compound section (remove a quarter)"), section.compound);
+            const bool compound_changed = ImGuiPureWrap::checkbox(_u8L("Compound section"), section.compound);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", _u8L("Remove the corner shared by both section planes.").c_str());
             const bool axis_changed = ImGuiPureWrap::combo(_u8L("Section plane"),
                 { "YZ (X)", "XZ (Y)", "XY (Z)" }, section.axis);
             if (axis_changed) {
@@ -6366,8 +6367,10 @@ void GLCanvas3D::_render_section_controls()
             section.adjusting_offset = adjusting_offset;
             if (ImGuiPureWrap::checkbox(_u8L("Show section cap"), section.show_cap))
                 request_extra_frame();
+            if (axis_changed && !section.isometric)
+                _orient_section_view(false);
             if (axis_changed || reversed || second_reversed || compound_changed)
-                _orient_section_view(section.isometric);
+                request_extra_frame();
 
             if (ImGuiPureWrap::button(_u8L("Normal to section")))
                 _orient_section_view(false);

@@ -29517,8 +29517,11 @@ msgstr "未选中有效点。请选取可见顶点；三点不能重复或接近
 msgid "Undo last point"
 msgstr "撤销上一个点"
 
-msgid "Compound section (remove a quarter)"
-msgstr "复合平面剖切（切去一个角区）"
+msgid "Compound section"
+msgstr "复合平面剖切"
+
+msgid "Remove the corner shared by both section planes."
+msgstr "切去两个剖切平面共同限定的角区。"
 
 msgid "Second section plane"
 msgstr "第二剖切平面"

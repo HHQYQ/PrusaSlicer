@@ -253,5 +253,5 @@ jobs:
           $version = '${{ steps.package.outputs.version }}'
           $tag = "v$version-three-point-circle"
           $assets = @(Get-ChildItem -LiteralPath installer-output -File | ForEach-Object FullName)
-          gh release create $tag @assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "PrusaSlicer $version — 三点测圆与复合剖切" --notes-file build-utils/release-notes-2.9.7.5.md
+          gh release create $tag @assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "PrusaSlicer $version — 三点测圆与复合剖切" --notes-file "build-utils/release-notes-$version.md"
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
