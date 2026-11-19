@@ -1,10 +1,10 @@
-# 本仓库的稳定修改版
+# PrusaSlicer Measure & Section
 
-基于 PrusaSlicer **2.9.7 稳定版**的三点测圆与复合平面剖切功能，位于 [codex/prusaslicer-2.9.7-three-point-circle 分支](https://github.com/HHQYQ/PrusaSlicer/tree/codex/prusaslicer-2.9.7-three-point-circle)。
+基于 PrusaSlicer **2.9.7 稳定版**的三点测圆与复合平面剖切功能，位于 [codex/prusaslicer-2.9.7-three-point-circle 分支](https://github.com/HHQYQ/PrusaSlicer-Measure-Section/tree/codex/prusaslicer-2.9.7-three-point-circle)。
 
-- [Windows x64 安装包、便携版及对应源码](https://github.com/HHQYQ/PrusaSlicer/releases)
-- [使用说明与改动详情](https://github.com/HHQYQ/PrusaSlicer/blob/codex/prusaslicer-2.9.7-three-point-circle/README.md)
-- [Windows 构建、GPU 剖切检查和覆盖升级测试](https://github.com/HHQYQ/PrusaSlicer/actions/workflows/build_windows.yml)
+- [Windows x64 安装包、便携版及对应源码](https://github.com/HHQYQ/PrusaSlicer-Measure-Section/releases)
+- [使用说明与改动详情](https://github.com/HHQYQ/PrusaSlicer-Measure-Section/blob/codex/prusaslicer-2.9.7-three-point-circle/README.md)
+- [Windows 构建、GPU 剖切检查和覆盖升级测试](https://github.com/HHQYQ/PrusaSlicer-Measure-Section/actions/workflows/build_windows.yml)
 
 本页 master 分支包含上游开发代码；编译上述修改版请使用前述 2.9.7 稳定版分支。
 
