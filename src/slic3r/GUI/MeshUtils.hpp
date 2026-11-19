@@ -191,6 +191,7 @@ public:
     ) const;
     
     const AABBMesh &get_aabb_mesh() const { return m_emesh; }
+    const std::shared_ptr<const TriangleMesh>& mesh_ptr() const { return m_mesh; }
 
     // Given a point and direction in world coords, returns whether the respective line
     // intersects the mesh if it is transformed into world by trafo.

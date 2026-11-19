@@ -35,6 +35,7 @@ struct Camera
 
 private:
     EType m_type{ EType::Perspective };
+    bool m_orthographic_override{ false };
     bool m_update_config_on_type_change_enabled{ false };
     Vec3d m_target{ Vec3d::Zero() };
     float m_zenit{ 45.0f };
@@ -56,7 +57,8 @@ private:
 public:
     Camera() { set_default_orientation(); }
 
-    EType get_type() const { return m_type; }
+    EType get_type() const { return m_orthographic_override ? EType::Ortho : m_type; }
+    void set_orthographic_override(bool enable) { m_orthographic_override = enable; }
     std::string get_type_as_string() const;
     void set_type(EType type);
     // valid values for type: "0" -> ortho, "1" -> perspective

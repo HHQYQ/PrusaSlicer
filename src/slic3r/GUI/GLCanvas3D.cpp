@@ -1416,11 +1416,12 @@ void GLCanvas3D::reset_volumes()
     if (!m_initialized)
         return;
 
-    if (m_volumes.empty())
+    if (m_volumes.empty() && m_section_view.caps.empty())
         return;
 
     _set_current();
 
+    m_section_view.caps.clear();
     m_selection.clear();
     m_volumes.clear();
     m_dirty = true;
@@ -2111,6 +2112,8 @@ void GLCanvas3D::render()
     // and the viewport was set incorrectly, leading to tripping glAsserts further down
     // the road (in apply_projection). That's why the minimum size is forced to 10.
     Camera& camera = wxGetApp().plater()->get_camera();
+    _update_section_view();
+    camera.set_orthographic_override(m_section_view.plane.is_active());
     camera.set_viewport(0, 0, std::max(10u, (unsigned int)cnv_size.get_width()), std::max(10u, (unsigned int)cnv_size.get_height()));
     camera.apply_viewport();
 
@@ -2160,6 +2163,7 @@ void GLCanvas3D::render()
 
     if (! s_multiple_beds.is_autoslicing()) {
         _render_objects(GLVolumeCollection::ERenderType::Opaque);
+        _render_section_caps();
         _render_sla_slices();
         _render_selection();
         _render_bed_axes();
@@ -2232,6 +2236,7 @@ void GLCanvas3D::render()
     }
 
     _render_overlays();
+    _render_section_controls();
 
     _render_bed_selector();
 
@@ -5734,7 +5739,7 @@ void GLCanvas3D::_picking_pass()
 
     m_hover_volume_idxs.clear();
 
-    const ClippingPlane clipping_plane = m_gizmos.get_clipping_plane().inverted_normal();
+    const ClippingPlane clipping_plane = _object_clipping_plane().inverted_normal();
     const SceneRaycaster::HitResult hit = m_scene_raycaster.hit(m_mouse.position, wxGetApp().plater()->get_camera(), &clipping_plane);
     if (hit.is_valid()) {
         switch (hit.type)
@@ -6154,6 +6159,178 @@ void GLCanvas3D::_render_bed_for_picking(const Transform3d& view_matrix, const T
     m_bed.render_for_picking(*this, view_matrix, projection_matrix, bottom, scale_factor);
 }
 
+namespace {
+
+bool is_section_model(const GLVolume& volume)
+{
+    return volume.is_active && !volume.is_modifier && !volume.is_wipe_tower() &&
+        volume.volume_idx() >= 0 && volume.mesh_raycaster != nullptr;
+}
+
+} // namespace
+
+Vec3d GLCanvas3D::SectionView::normal() const
+{
+    Vec3d normal = Vec3d::Zero();
+    const double sign = axis == 1 ? -1.0 : 1.0;
+    normal[axis] = reversed ? -sign : sign;
+    return normal;
+}
+
+bool GLCanvas3D::can_section_view() const
+{
+    return m_section_view.enabled || std::any_of(m_volumes.volumes.begin(), m_volumes.volumes.end(),
+        [](const GLVolume* volume) { return is_section_model(*volume); });
+}
+
+void GLCanvas3D::set_section_view(bool enabled, bool isometric)
+{
+    m_section_view.enabled = enabled;
+    m_section_view.adjusting_offset = false;
+    if (enabled)
+        _orient_section_view(isometric);
+
+    set_as_dirty();
+    request_extra_frame();
+}
+
+void GLCanvas3D::_orient_section_view(bool isometric)
+{
+    m_section_view.isometric = isometric;
+    const Vec3d normal = m_section_view.normal();
+    Vec3d direction = normal;
+    Vec3d up = Vec3d::UnitZ();
+    if (isometric) {
+        direction = Vec3d(1.0, -1.0, 1.0);
+        direction[m_section_view.axis] = normal[m_section_view.axis];
+        direction.normalize();
+    } else if (m_section_view.axis == 2) {
+        up = normal.z() * Vec3d::UnitY();
+    }
+
+    Camera& camera = wxGetApp().plater()->get_camera();
+    const Vec3d target = camera.get_target();
+    camera.look_at(target + camera.get_distance() * direction, target, up);
+    request_extra_frame();
+}
+
+void GLCanvas3D::_update_section_view()
+{
+    SectionView& section = m_section_view;
+    section.plane = ClippingPlane::ClipsNothing();
+    section.bounds.reset();
+    if (!section.enabled || m_gizmos.is_running() || m_layers_editing.is_enabled())
+        return;
+
+    for (const GLVolume* volume : m_volumes.volumes)
+        if (is_section_model(*volume))
+            section.bounds.merge(volume->transformed_bounding_box());
+
+    if (!section.bounds.defined)
+        return;
+
+    const int axis = section.axis;
+    const double half_span = 0.5 * section.bounds.size()[axis];
+    section.offset = std::clamp(section.offset, -half_span, half_span);
+    const double position = section.bounds.center()[axis] + section.offset;
+    const Vec3d normal = section.normal();
+    section.plane = ClippingPlane(normal, position * normal[axis]);
+}
+
+ClippingPlane GLCanvas3D::_object_clipping_plane() const
+{
+    // The volume shaders expect the opposite normal from the mesh clipper and the raycaster.
+    return m_section_view.plane.is_active() ? m_section_view.plane.inverted_normal() : m_gizmos.get_clipping_plane();
+}
+
+void GLCanvas3D::_render_section_caps()
+{
+    SectionView& section = m_section_view;
+    if (!section.plane.is_active() || !section.show_cap) {
+        section.caps.clear();
+        return;
+    }
+    // Keep the clip responsive while the offset is being dragged. Rebuild the cap on release.
+    if (section.adjusting_offset)
+        return;
+
+    const int axis = section.axis;
+    const double position = section.plane.get_offset() * section.plane.get_normal()[axis];
+    section.caps.resize(m_volumes.volumes.size());
+    for (size_t idx = 0; idx < m_volumes.volumes.size(); ++idx) {
+        const GLVolume& volume = *m_volumes.volumes[idx];
+        if (!is_section_model(volume)) {
+            section.caps[idx].reset();
+            continue;
+        }
+
+        const BoundingBoxf3& bounds = volume.transformed_bounding_box();
+        if (position <= bounds.min[axis] || position >= bounds.max[axis])
+            continue;
+
+        std::unique_ptr<MeshClipper>& cap = section.caps[idx];
+        if (!cap)
+            cap = std::make_unique<MeshClipper>();
+
+        const auto& mesh = volume.mesh_raycaster->mesh_ptr();
+        cap->set_mesh(std::shared_ptr<const indexed_triangle_set>(mesh, &mesh->its));
+        cap->set_transformation(Geometry::Transformation(volume.world_matrix()));
+        cap->set_plane(section.plane);
+        cap->render_cut(ColorRGBA(0.95f, 0.49f, 0.15f, 1.f));
+    }
+}
+
+void GLCanvas3D::_render_section_controls()
+{
+    SectionView& section = m_section_view;
+    if (!section.enabled)
+        return;
+
+    const float scale = wxGetApp().imgui()->get_style_scaling();
+    const float width = 250.0f * scale;
+    const float canvas_width = static_cast<float>(get_canvas_size().get_width());
+    ImGuiPureWrap::set_next_window_pos(canvas_width - 12.0f * scale, 96.0f * scale, ImGuiCond_Appearing, 1.0f);
+    bool open = true;
+    if (ImGuiPureWrap::begin(_u8L("Section View"), &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
+        if (!section.plane.is_active()) {
+            const std::string status = (m_gizmos.is_running() || m_layers_editing.is_enabled())
+                ? _u8L("Close the active tool to resume section view.")
+                : _u8L("Add a model to display a section.");
+            ImGuiPureWrap::text_wrapped(status.c_str(), width);
+        } else {
+            const bool axis_changed = ImGuiPureWrap::combo(_u8L("Section plane"),
+                { "YZ (X)", "XZ (Y)", "XY (Z)" }, section.axis);
+            if (axis_changed)
+                section.offset = 0.0;
+            const double half_span = 0.5 * section.bounds.size()[section.axis];
+            const double min_offset = -half_span;
+            ImGuiPureWrap::text(_u8L("Section offset from center"));
+            ImGui::SetNextItemWidth(width);
+            const bool offset_changed = ImGui::SliderScalar("##section_offset", ImGuiDataType_Double,
+                &section.offset, &min_offset, &half_span, "%.3f mm");
+            const bool adjusting_offset = ImGui::IsItemActive();
+            if (offset_changed || section.adjusting_offset != adjusting_offset)
+                request_extra_frame();
+            section.adjusting_offset = adjusting_offset;
+
+            const bool reversed = ImGuiPureWrap::checkbox(_u8L("Reverse section direction"), section.reversed);
+            if (ImGuiPureWrap::checkbox(_u8L("Show section cap"), section.show_cap))
+                request_extra_frame();
+            if (axis_changed || reversed)
+                _orient_section_view(section.isometric);
+
+            if (ImGuiPureWrap::button(_u8L("Normal to section")))
+                _orient_section_view(false);
+            ImGui::SameLine();
+            if (ImGuiPureWrap::button(_u8L("Isometric")))
+                _orient_section_view(true);
+        }
+    }
+    ImGuiPureWrap::end();
+    if (!open)
+        set_section_view(false);
+}
+
 void GLCanvas3D::_render_objects(GLVolumeCollection::ERenderType type)
 {
     if (m_volumes.empty())
@@ -6161,7 +6338,7 @@ void GLCanvas3D::_render_objects(GLVolumeCollection::ERenderType type)
 
     glsafe(::glEnable(GL_DEPTH_TEST));
 
-    m_camera_clipping_plane = m_gizmos.get_clipping_plane();
+    m_camera_clipping_plane = _object_clipping_plane();
 
     if (m_picking_enabled)
         // Update the layer editing selection to the first object selected, update the current object maximum Z.
@@ -6207,8 +6384,9 @@ void GLCanvas3D::_render_objects(GLVolumeCollection::ERenderType type)
         m_volumes.set_z_range(-FLT_MAX, FLT_MAX);
 
     m_volumes.set_clipping_plane(m_camera_clipping_plane.get_data());
-    m_volumes.set_show_sinking_contours(! m_gizmos.is_hiding_instances());
-    m_volumes.set_show_non_manifold_edges(!m_gizmos.is_hiding_instances() && m_gizmos.get_current_type() != GLGizmosManager::Simplify);
+    const bool show_uncut_overlays = !m_section_view.plane.is_active() && !m_gizmos.is_hiding_instances();
+    m_volumes.set_show_sinking_contours(show_uncut_overlays);
+    m_volumes.set_show_non_manifold_edges(show_uncut_overlays && m_gizmos.get_current_type() != GLGizmosManager::Simplify);
 
     const Camera& camera = wxGetApp().plater()->get_camera();
     auto trafo = camera.get_view_matrix();
@@ -6743,6 +6921,7 @@ void GLCanvas3D::_render_volumes_for_picking(const Camera& camera) const
     glsafe(::glDisable(GL_CULL_FACE));
 
     const Transform3d& view_matrix = camera.get_view_matrix();
+    const ClippingPlane clipping_plane = _object_clipping_plane();
     for (size_t type = 0; type < 2; ++ type) {
         GLVolumeWithIdAndZList to_render = volumes_to_render(m_volumes.volumes, (type == 0) ? GLVolumeCollection::ERenderType::Opaque : GLVolumeCollection::ERenderType::Transparent, view_matrix);
         for (const GLVolumeWithIdAndZ& volume : to_render)
@@ -6757,7 +6936,7 @@ void GLCanvas3D::_render_volumes_for_picking(const Camera& camera) const
                 shader->set_uniform("projection_matrix", camera.get_projection_matrix());
                 shader->set_uniform("volume_world_matrix", volume.first->world_matrix());
                 shader->set_uniform("z_range", m_volumes.get_z_range());
-                shader->set_uniform("clipping_plane", m_volumes.get_clipping_plane());
+                shader->set_uniform("clipping_plane", clipping_plane.get_data());
                 volume.first->render();
                 shader->stop_using();
           }

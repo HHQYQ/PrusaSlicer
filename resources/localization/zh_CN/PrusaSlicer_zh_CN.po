@@ -29471,3 +29471,39 @@ msgstr "zlib 错误 %d"
 #: ../src/richtext/richtextbulletspage.cpp:288
 msgid "~"
 msgstr "~"
+
+msgid "Section View"
+msgstr "剖面视图"
+
+msgid "Show a model cross-section"
+msgstr "显示模型剖面"
+
+msgid "Isometric Section View"
+msgstr "等轴测剖视图"
+
+msgid "Show the cross-section in an isometric projection"
+msgstr "以等轴测投影显示模型剖面"
+
+msgid "Section plane"
+msgstr "剖切平面"
+
+msgid "Section offset from center"
+msgstr "相对模型中心的偏移"
+
+msgid "Reverse section direction"
+msgstr "反转剖切方向"
+
+msgid "Show section cap"
+msgstr "显示剖面填充"
+
+msgid "Normal to section"
+msgstr "正视剖面"
+
+msgid "Isometric"
+msgstr "等轴测"
+
+msgid "Close the active tool to resume section view."
+msgstr "关闭当前工具后恢复剖面视图。"
+
+msgid "Add a model to display a section."
+msgstr "添加模型后即可查看剖面。"

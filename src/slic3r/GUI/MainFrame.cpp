@@ -1724,6 +1724,18 @@ void MainFrame::init_menubar_as_editor()
         viewMenu = new wxMenu();
         add_common_view_menu_items(viewMenu, this, std::bind(&MainFrame::can_change_view, this));
         viewMenu->AppendSeparator();
+        const auto can_section = [this]() {
+            return can_change_view() && m_plater->is_view3D_shown() && m_plater->canvas3D()->can_section_view();
+        };
+        append_menu_check_item(viewMenu, wxID_ANY, _L("Section View"), _L("Show a model cross-section"),
+            [this](wxCommandEvent&) {
+                GLCanvas3D& canvas = *m_plater->canvas3D();
+                canvas.set_section_view(!canvas.is_section_view_enabled());
+            }, this, can_section, [this]() { return m_plater->canvas3D()->is_section_view_enabled(); }, this);
+        append_menu_item(viewMenu, wxID_ANY, _L("Isometric Section View"), _L("Show the cross-section in an isometric projection"),
+            [this](wxCommandEvent&) { m_plater->canvas3D()->set_section_view(true, true); },
+            "", nullptr, can_section, this);
+        viewMenu->AppendSeparator();
         append_menu_check_item(viewMenu, wxID_ANY, _L("Show &Labels") + sep + "E", _L("Show object/instance labels in 3D scene"),
             [this](wxCommandEvent&) { m_plater->show_view3D_labels(!m_plater->are_view3D_labels_shown()); }, this,
             [this]() { return m_plater->is_view3D_shown(); }, [this]() { return m_plater->are_view3D_labels_shown(); }, this);

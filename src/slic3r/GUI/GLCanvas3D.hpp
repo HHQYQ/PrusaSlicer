@@ -505,6 +505,20 @@ private:
     GLToolbar m_undoredo_toolbar;
     std::array<ClippingPlane, 2> m_clipping_planes;
     ClippingPlane m_camera_clipping_plane;
+    struct SectionView {
+        bool enabled{ false };
+        bool isometric{ false };
+        bool reversed{ false };
+        bool show_cap{ true };
+        bool adjusting_offset{ false };
+        int axis{ 1 };
+        double offset{ 0.0 };
+        BoundingBoxf3 bounds;
+        ClippingPlane plane;
+        std::vector<std::unique_ptr<MeshClipper>> caps;
+
+        Vec3d normal() const;
+    } m_section_view;
     bool m_use_clipping_planes;
     std::array<SlaCap, 2> m_sla_caps;
     int m_layer_slider_index = -1;
@@ -801,6 +815,9 @@ public:
     void zoom_to_selection();
     void zoom_to_gcode();
     void select_view(const std::string& direction);
+    bool can_section_view() const;
+    bool is_section_view_enabled() const { return m_section_view.enabled; }
+    void set_section_view(bool enabled, bool isometric = false);
 
     PrinterTechnology current_printer_technology() const;
 
@@ -1006,6 +1023,11 @@ private:
     void _render_bed_axes();
     void _render_bed_for_picking(const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom);
     void _render_objects(GLVolumeCollection::ERenderType type);
+    void _orient_section_view(bool isometric);
+    void _update_section_view();
+    void _render_section_caps();
+    void _render_section_controls();
+    ClippingPlane _object_clipping_plane() const;
     void _render_gcode() { m_gcode_viewer.render(); }
     void _render_gcode_cog() { m_gcode_viewer.render_cog(); }
     void _render_selection();

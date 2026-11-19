@@ -831,13 +831,11 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType type, bool disab
 
         if (render_as_mmu_painted) {
             shader->start_using();
-            const std::array<float, 4> clp_data = { 0.0f, 0.0f, 1.0f, FLT_MAX };
-            const std::array<float, 2> z_range = { -FLT_MAX, FLT_MAX };
             const bool is_left_handed = volume.first->is_left_handed();
             shader->set_uniform("volume_world_matrix", world_matrix);
             shader->set_uniform("volume_mirrored", is_left_handed);
-            shader->set_uniform("clipping_plane", clp_data);
-            shader->set_uniform("z_range", z_range);
+            shader->set_uniform("clipping_plane", m_clipping_plane);
+            shader->set_uniform("z_range", m_z_range);
             shader->set_uniform("view_model_matrix", view_matrix * world_matrix);
             shader->set_uniform("projection_matrix", projection_matrix);
             shader->set_uniform("view_normal_matrix", view_normal_matrix);

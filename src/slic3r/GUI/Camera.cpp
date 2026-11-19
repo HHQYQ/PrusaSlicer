@@ -28,7 +28,7 @@ double Camera::SceneBoxScaleFactor = 2.5;
 
 std::string Camera::get_type_as_string() const
 {
-    switch (m_type)
+    switch (get_type())
     {
     case EType::Unknown:     return "unknown";
     case EType::Perspective: return "perspective";
@@ -109,7 +109,7 @@ void Camera::select_view(const std::string& direction)
 
 double Camera::get_near_left() const
 {
-    switch (m_type)
+    switch (get_type())
     {
     case EType::Perspective:
         return m_frustrum_zs.first * (m_projection_matrix.matrix()(0, 2) - 1.0) / m_projection_matrix.matrix()(0, 0);
@@ -121,7 +121,7 @@ double Camera::get_near_left() const
 
 double Camera::get_near_right() const
 {
-    switch (m_type)
+    switch (get_type())
     {
     case EType::Perspective:
         return m_frustrum_zs.first * (m_projection_matrix.matrix()(0, 2) + 1.0) / m_projection_matrix.matrix()(0, 0);
@@ -133,7 +133,7 @@ double Camera::get_near_right() const
 
 double Camera::get_near_top() const
 {
-    switch (m_type)
+    switch (get_type())
     {
     case EType::Perspective:
         return m_frustrum_zs.first * (m_projection_matrix.matrix()(1, 2) + 1.0) / m_projection_matrix.matrix()(1, 1);
@@ -145,7 +145,7 @@ double Camera::get_near_top() const
 
 double Camera::get_near_bottom() const
 {
-    switch (m_type)
+    switch (get_type())
     {
     case EType::Perspective:
         return m_frustrum_zs.first * (m_projection_matrix.matrix()(1, 2) - 1.0) / m_projection_matrix.matrix()(1, 1);
@@ -157,7 +157,7 @@ double Camera::get_near_bottom() const
 
 double Camera::get_near_width() const
 {
-    switch (m_type)
+    switch (get_type())
     {
     case EType::Perspective:
         return 2.0 * m_frustrum_zs.first / m_projection_matrix.matrix()(0, 0);
@@ -169,7 +169,7 @@ double Camera::get_near_width() const
 
 double Camera::get_near_height() const
 {
-    switch (m_type)
+    switch (get_type())
     {
     case EType::Perspective:
         return 2.0 * m_frustrum_zs.first / m_projection_matrix.matrix()(1, 1);
@@ -181,7 +181,7 @@ double Camera::get_near_height() const
 
 double Camera::get_fov() const
 {
-    switch (m_type)
+    switch (get_type())
     {
     case EType::Perspective:
         return 2.0 * Geometry::rad2deg(std::atan(1.0 / m_projection_matrix.matrix()(1, 1)));
@@ -221,7 +221,7 @@ void Camera::apply_projection(const BoundingBoxf3& box, double near_z, double fa
     w *= inv_zoom;
     h *= inv_zoom;
 
-    switch (m_type)
+    switch (get_type())
     {
     default:
     case EType::Ortho:
@@ -250,7 +250,7 @@ void Camera::apply_projection(double left, double right, double bottom, double t
     const double inv_dy = 1.0 / (top - bottom);
     const double inv_dz = 1.0 / (far_z - near_z);
 
-    switch (m_type)
+    switch (get_type())
     {
     default:
     case EType::Ortho:
