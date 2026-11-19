@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -119,6 +120,7 @@ jobs:
           }
 
       - name: Package for Windows x64
+        id: package
         run: |
           $env:PRUSA_INSTALL_PAYLOAD = (Resolve-Path payload).Path
           $env:PRUSA_INSTALL_OUTPUT = Join-Path $PWD 'installer-output'
@@ -127,14 +129,72 @@ jobs:
           if (!$iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
           & $iscc 'build-utils\windows-three-point-circle.iss'
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
+          $packages = @(Get-ChildItem -LiteralPath $env:PRUSA_INSTALL_OUTPUT -Filter '*-Setup.exe' -File)
+          if ($packages.Count -ne 1) { throw 'Expected exactly one setup executable.' }
+          $setup = $packages[0]
+          $version = $setup.VersionInfo.FileVersionRaw.ToString()
+          if ($setup.Name -ne "PrusaSlicer-$version-Three-Point-Circle-x64-Setup.exe" -or
+              $setup.VersionInfo.ProductVersionRaw.ToString() -ne $version) {
+            throw 'Setup filename, file version and product version differ.'
+          }
+          "setup=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Smoke test installer and installed application
+      - name: Find the previous successful installer for the upgrade test
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $setup = (Resolve-Path 'installer-output\PrusaSlicer-2.9.7-Three-Point-Circle-r2-x64-Setup.exe').Path
+          $runId = gh run list --workflow build_windows.yml --branch $env:GITHUB_REF_NAME `
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty'
+          if ($LASTEXITCODE -ne 0 -or !$runId) { return }
+          $previousDir = Join-Path $env:RUNNER_TEMP 'PrusaThreePointPrevious'
+          gh run download $runId --pattern 'PrusaSlicer-*-Windows-x64' --dir $previousDir
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'Previous artifact unavailable. Testing in-place reinstallation.'
+            return
+          }
+          $previous = @(Get-ChildItem -LiteralPath $previousDir -Recurse -Filter '*-Setup.exe' -File)
+          if ($previous.Count -eq 1) { "setup=$($previous[0].FullName)" >> $env:GITHUB_OUTPUT }
+
+      - name: Test installation, in-place replacement and application startup
+        env:
+          SETUP_EXE: ${{ steps.package.outputs.setup }}
+          INSTALLER_VERSION: ${{ steps.package.outputs.version }}
+          PREVIOUS_SETUP: ${{ steps.previous.outputs.setup }}
+        run: |
+          $setup = $env:SETUP_EXE
           $installDir = Join-Path $env:RUNNER_TEMP 'PrusaThreePointTest'
-          $parameters = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', "/DIR=""$installDir""")
-          $install = Start-Process -FilePath $setup -ArgumentList $parameters -Wait -PassThru
+          $parameters = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS')
+          $baseline = if ($env:PREVIOUS_SETUP) { $env:PREVIOUS_SETUP } else { $setup }
+          Write-Host "Initial installer: $(Split-Path $baseline -Leaf)"
+          $install = Start-Process -FilePath $baseline -ArgumentList ($parameters + "/DIR=""$installDir""") -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exit code: $($install.ExitCode)" }
+
+          $installedExe = Join-Path $installDir 'prusa-slicer.exe'
+          $expectedHash = (Get-FileHash -LiteralPath 'payload\prusa-slicer.exe').Hash
+          [IO.File]::AppendAllText($installedExe, 'Test marker for file replacement')
+          $presetDir = Join-Path $env:APPDATA 'PrusaSlicer\printer'
+          New-Item -ItemType Directory -Path $presetDir -Force | Out-Null
+          $preset = Join-Path $presetDir 'installer-upgrade-test.ini'
+          'Preset retained across installation' | Set-Content -LiteralPath $preset
+          $presetHash = (Get-FileHash -LiteralPath $preset).Hash
+
+          $upgrade = Start-Process -FilePath $setup -ArgumentList $parameters -Wait -PassThru
+          if ($upgrade.ExitCode -ne 0) { throw "In-place installation exit code: $($upgrade.ExitCode)" }
+          $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          $entry = Get-ItemProperty -LiteralPath "$uninstallRoot\{CD88DF34-AB88-423B-870D-4DA3AC903830}_is1"
+          if ($entry.InstallLocation.TrimEnd('\') -ne $installDir -or $entry.DisplayVersion -ne $env:INSTALLER_VERSION) {
+            throw 'The registered directory or installed version is incorrect.'
+          }
+          if ((Get-FileHash -LiteralPath $installedExe).Hash -ne $expectedHash -or
+              (Get-FileHash -LiteralPath $preset).Hash -ne $presetHash) {
+            throw 'In-place installation did not replace the application and preserve the preset.'
+          }
+          if (@(Get-ChildItem -LiteralPath $installDir -Filter 'unins*.dat' -File).Count -ne 1) {
+            throw 'The installation did not reuse the existing uninstall log.'
+          }
+
           $installedCli = Join-Path $installDir 'prusa-slicer-console.exe'
           $stdout = Join-Path $env:RUNNER_TEMP 'prusa-three-point-help.txt'
           $stderr = Join-Path $env:RUNNER_TEMP 'prusa-three-point-stderr.txt'
@@ -150,7 +210,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PrusaSlicer-2.9.7-Three-Point-Circle-r2-Windows-x64
+          name: PrusaSlicer-${{ steps.package.outputs.version }}-Three-Point-Circle-Windows-x64
           path: installer-output/*
           if-no-files-found: error
           compression-level: 0
