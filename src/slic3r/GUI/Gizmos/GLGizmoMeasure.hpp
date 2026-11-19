@@ -79,14 +79,17 @@ class GLGizmoMeasure : public GLGizmoBase
         const ModelInstance* instance{ nullptr };
         const ModelVolume* volume{ nullptr };
         Transform3d world_trafo;
+        unsigned int canvas_volume_idx;
 
         bool operator == (const VolumeCacheItem& other) const {
             return this->object == other.object && this->instance == other.instance && this->volume == other.volume &&
-                this->world_trafo.isApprox(other.world_trafo);
+                this->canvas_volume_idx == other.canvas_volume_idx && this->world_trafo.isApprox(other.world_trafo);
         }
     };
 
     std::vector<VolumeCacheItem> m_volumes_cache;
+    std::array<ClippingPlane, 2> m_section_planes;
+    bool m_section_caps_visible{ false };
 
     EMode m_mode{ EMode::FeatureSelection };
     Measure::MeasurementResult m_measurement_result;
@@ -140,6 +143,8 @@ class GLGizmoMeasure : public GLGizmoBase
     bool m_is_editing_distance_first_frame{ true };
 
     void update_if_needed();
+    bool unproject_measurement(const Vec2d& mouse_pos, const Camera& camera, Vec3f& hit, Vec3f& normal,
+        size_t* facet, bool require_even_hits = true) const;
 
     void disable_scene_raycasters();
     void restore_scene_raycasters_state();

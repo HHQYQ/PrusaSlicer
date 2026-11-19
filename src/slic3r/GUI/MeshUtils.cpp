@@ -20,12 +20,92 @@
 #include <GL/glew.h>
 
 #include <igl/unproject.h>
+#include <boost/container/static_vector.hpp>
 
 #include <cstdint>
 
 
 namespace Slic3r {
 namespace GUI {
+
+namespace {
+
+// Clipping a triangle twice against half-spaces produces at most five vertices.
+using SectionPolygon = boost::container::static_vector<Vec3d, 6>;
+
+SectionPolygon clip_section_polygon(const SectionPolygon& polygon, const ClippingPlane& plane, bool keep_inside)
+{
+    SectionPolygon result;
+    if (polygon.empty())
+        return result;
+    const Vec3d normal = plane.get_normal();
+    const auto append = [&result](const Vec3d& point) {
+        if (result.empty() || result.back() != point)
+            result.push_back(point);
+    };
+    Vec3d previous = polygon.back();
+    double previous_distance = plane.distance(previous);
+    for (const Vec3d& point : polygon) {
+        const double distance = plane.distance(point);
+        const bool keep = (distance >= 0.) == keep_inside;
+        if (keep != ((previous_distance >= 0.) == keep_inside)) {
+            // Use the same interpolation order on shared edges with opposite winding.
+            const Vec3d& inside = distance >= 0. ? point : previous;
+            const Vec3d& outside = distance < 0. ? point : previous;
+            const double in_distance = std::max(distance, previous_distance);
+            const double out_distance = std::min(distance, previous_distance);
+            Vec3d intersection = inside + (outside - inside) * (in_distance / (in_distance - out_distance));
+            intersection += normal * plane.distance(intersection);
+            append(intersection);
+        }
+        if (keep)
+            append(point);
+        previous = point;
+        previous_distance = distance;
+    }
+    if (result.size() > 1 && result.front() == result.back())
+        result.pop_back();
+    return result;
+}
+
+} // namespace
+
+indexed_triangle_set clip_section_surface(const indexed_triangle_set& mesh,
+    const ClippingPlane& first, const ClippingPlane& second)
+{
+    indexed_triangle_set result;
+    result.indices.reserve(mesh.indices.size());
+    result.vertices.reserve(mesh.vertices.size());
+    const auto append = [&result](const SectionPolygon& polygon) {
+        if (polygon.size() < 3)
+            return;
+        const Vec3f a = polygon.front().cast<float>();
+        for (size_t i = 1; i + 1 < polygon.size(); ++i) {
+            const Vec3f b = polygon[i].cast<float>();
+            const Vec3f c = polygon[i + 1].cast<float>();
+            if ((b - a).cross(c - a).squaredNorm() == 0.f)
+                continue;
+            const int index = int(result.vertices.size());
+            result.vertices.insert(result.vertices.end(), {a, b, c});
+            result.indices.emplace_back(index, index + 1, index + 2);
+        }
+    };
+    for (const Vec3i& face : mesh.indices) {
+        SectionPolygon triangle;
+        for (int i = 0; i < 3; ++i)
+            triangle.emplace_back(mesh.vertices[face[i]].cast<double>());
+        const SectionPolygon kept = clip_section_polygon(triangle, first, true);
+        if (second.is_active()) {
+            // Split both visible regions along the same planes so their shared edges join.
+            append(clip_section_polygon(kept, second, true));
+            append(clip_section_polygon(kept, second, false));
+            append(clip_section_polygon(clip_section_polygon(triangle, first, false), second, true));
+        } else {
+            append(kept);
+        }
+    }
+    return result;
+}
 
 void MeshClipper::set_behaviour(bool fill_cut, double contour_width)
 {
@@ -156,6 +236,18 @@ void MeshClipper::render_contour(const ColorRGBA& color, const std::vector<size_
         curr_shader->start_using();
 }
 
+void MeshClipper::append_cut_mesh(indexed_triangle_set& mesh) const
+{
+    if (!m_result)
+        return;
+    const bool flipped = m_trafo.get_matrix().matrix().determinant() < 0.;
+    std::vector<Vec3f> triangles;
+    for (const CutIsland& island : m_result->cut_islands)
+        for (const Vec2f& point : triangulate_expolygon_2f(island.expoly, flipped))
+            triangles.emplace_back((m_result->trafo * Vec3d(point.x(), point.y(), m_result->height)).cast<float>());
+    its_merge(mesh, triangles);
+}
+
 int MeshClipper::is_projection_inside_cut(const Vec3d& point_in) const
 {
     if (!m_result || m_result->cut_islands.empty())
@@ -225,6 +317,7 @@ void MeshClipper::recalculate_triangles()
     auto plane_mesh = Eigen::Hyperplane<double, 3>(m_plane.get_normal(), -m_plane.distance(Vec3d::Zero())).transform(m_trafo.get_matrix().inverse());
     const Vec3d up = plane_mesh.normal();
     const float height_mesh = -plane_mesh.offset();
+    m_result->height = height_mesh;
 
     // Now do the cutting
     MeshSlicingParams slicing_params;
@@ -426,7 +519,7 @@ void MeshRaycaster::line_from_mouse_pos(const Vec2d& mouse_pos, const Transform3
 
 bool MeshRaycaster::unproject_on_mesh(const Vec2d& mouse_pos, const Transform3d& trafo, const Camera& camera,
                                       Vec3f& position, Vec3f& normal, const ClippingPlane* clipping_plane,
-                                      size_t* facet_idx, const bool require_even_number_of_hits) const
+                                      size_t* facet_idx, const bool require_even_number_of_hits, const bool front_faces_only) const
 {
     Vec3d point;
     Vec3d direction;
@@ -444,6 +537,7 @@ bool MeshRaycaster::unproject_on_mesh(const Vec2d& mouse_pos, const Transform3d&
     for (i=0; i<hits.size(); ++i) {
         Vec3d transformed_hit = trafo * hits[i].position();
         if (transformed_hit.z() >= SINKING_Z_THRESHOLD &&
+            (!front_faces_only || hits[i].normal().dot(direction) < 0.) &&
             (! clipping_plane || ! clipping_plane->is_point_clipped(transformed_hit)))
             break;
     }

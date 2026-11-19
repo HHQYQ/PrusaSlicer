@@ -6225,13 +6225,19 @@ void GLCanvas3D::_orient_section_view(bool isometric)
     request_extra_frame();
 }
 
+bool GLCanvas3D::_section_view_paused() const
+{
+    return m_layers_editing.is_enabled() ||
+        (m_gizmos.is_running() && m_gizmos.get_current_type() != GLGizmosManager::Measure);
+}
+
 void GLCanvas3D::_update_section_view()
 {
     SectionView& section = m_section_view;
     section.plane = ClippingPlane::ClipsNothing();
     section.second_plane = ClippingPlane::ClipsNothing();
     section.bounds.reset();
-    if (!section.enabled || m_gizmos.is_running() || m_layers_editing.is_enabled())
+    if (!section.enabled || _section_view_paused())
         return;
 
     for (const GLVolume* volume : m_volumes.volumes)
@@ -6289,8 +6295,10 @@ void GLCanvas3D::_render_section_caps()
             const int axis = p == 0 ? section.axis : section.second_axis();
             const double position = plane.get_offset() * plane.get_normal()[axis];
             const BoundingBoxf3& bounds = volume.transformed_bounding_box();
-            if (position <= bounds.min[axis] || position >= bounds.max[axis])
+            if (position <= bounds.min[axis] || position >= bounds.max[axis]) {
+                cap.reset();
                 continue;
+            }
             if (!cap)
                 cap = std::make_unique<MeshClipper>();
 
@@ -6309,6 +6317,18 @@ void GLCanvas3D::_render_section_caps()
     }
 }
 
+void GLCanvas3D::append_section_caps(size_t volume_idx, indexed_triangle_set& mesh) const
+{
+    const auto& section = m_section_view;
+    const size_t plane_count = section.second_plane.is_active() ? 2 : 1;
+    const size_t first = volume_idx * plane_count;
+    if (!section_caps_visible() || is_section_offset_adjusting() || first + plane_count > section.caps.size())
+        return;
+    for (size_t p = 0; p < plane_count; ++p)
+        if (section.caps[first + p])
+            section.caps[first + p]->append_cut_mesh(mesh);
+}
+
 void GLCanvas3D::_render_section_controls()
 {
     SectionView& section = m_section_view;
@@ -6322,7 +6342,7 @@ void GLCanvas3D::_render_section_controls()
     bool open = true;
     if (ImGuiPureWrap::begin(_u8L("Section View"), &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
         if (!section.plane.is_active()) {
-            const std::string status = (m_gizmos.is_running() || m_layers_editing.is_enabled())
+            const std::string status = _section_view_paused()
                 ? _u8L("Close the active tool to resume section view.")
                 : _u8L("Add a model to display a section.");
             ImGuiPureWrap::text_wrapped(status.c_str(), width);

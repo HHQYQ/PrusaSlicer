@@ -220,7 +220,7 @@ bool GLGizmosManager::open_gizmo(EType type)
         if (!m_parent.can_section_view())
             return false;
         const bool enabled = !m_parent.is_section_view_enabled();
-        if (enabled && !activate_gizmo(Undefined))
+        if (enabled && m_current != Measure && !activate_gizmo(Undefined))
             return false;
         m_parent.set_section_view(enabled, true);
         return true;

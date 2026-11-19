@@ -73,6 +73,10 @@ public:
     }
 };
 
+// Keep the same part of a world-space mesh as the section view. The second
+// plane, if active, removes only the intersection of the two clipped sides.
+indexed_triangle_set clip_section_surface(const indexed_triangle_set& mesh,
+    const ClippingPlane& first, const ClippingPlane& second);
 
 // MeshClipper class cuts a mesh and is able to return a triangulated cut.
 class MeshClipper
@@ -121,6 +125,7 @@ public:
     // be set in world coords.
     void render_cut(const ColorRGBA& color, const std::vector<size_t>* ignore_idxs = nullptr);
     void render_contour(const ColorRGBA& color, const std::vector<size_t>* ignore_idxs = nullptr);
+    void append_cut_mesh(indexed_triangle_set& mesh) const;
 
     // Returns index of the contour which was clicked, -1 otherwise.
     int is_projection_inside_cut(const Vec3d& point) const;
@@ -150,6 +155,7 @@ private:
     struct ClipResult {
         std::vector<CutIsland> cut_islands;
         Transform3d trafo; // this rotates the cut into world coords
+        float height{ 0.f };
     };
     std::optional<ClipResult> m_result;
     bool m_fill_cut = true;
@@ -187,7 +193,8 @@ public:
         Vec3f& normal, // normal of the triangle that was hit
         const ClippingPlane* clipping_plane = nullptr, // clipping plane (if active)
         size_t* facet_idx = nullptr, // index of the facet hit
-        bool require_even_number_of_hits = true // When it is true, then an odd number (unclipped) of hits are ignored, and false is returned.
+        bool require_even_number_of_hits = true, // When it is true, then an odd number (unclipped) of hits are ignored, and false is returned.
+        bool front_faces_only = false
     ) const;
     
     const AABBMesh &get_aabb_mesh() const { return m_emesh; }

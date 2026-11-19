@@ -29528,3 +29528,6 @@ msgstr "第二剖切平面"
 
 msgid "Reverse second section direction"
 msgstr "反转第二剖切方向"
+
+msgid "Release the section slider to measure."
+msgstr "松开剖切滑块后即可测量。"

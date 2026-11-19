@@ -823,6 +823,10 @@ public:
     void select_view(const std::string& direction);
     bool can_section_view() const;
     bool is_section_view_enabled() const { return m_section_view.enabled; }
+    std::array<ClippingPlane, 2> section_planes() const { return {m_section_view.plane, m_section_view.second_plane}; }
+    bool is_section_offset_adjusting() const { return m_section_view.enabled && m_section_view.adjusting_offset; }
+    bool section_caps_visible() const { return m_section_view.plane.is_active() && m_section_view.show_cap; }
+    void append_section_caps(size_t volume_idx, indexed_triangle_set& mesh) const;
     void set_section_view(bool enabled, bool isometric = false);
 
     PrinterTechnology current_printer_technology() const;
@@ -1030,6 +1034,7 @@ private:
     void _render_bed_for_picking(const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom);
     void _render_objects(GLVolumeCollection::ERenderType type);
     void _orient_section_view(bool isometric);
+    bool _section_view_paused() const;
     void _update_section_view();
     void _render_section_caps();
     void _render_section_controls();

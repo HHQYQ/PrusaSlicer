@@ -363,6 +363,8 @@ GLGizmoMeasure::GLGizmoMeasure(GLCanvas3D& parent, const std::string& icon_filen
 bool GLGizmoMeasure::on_mouse(const wxMouseEvent &mouse_event)
 {
     m_mouse_pos = { double(mouse_event.GetX()), double(mouse_event.GetY()) };
+    if (m_parent.is_section_offset_adjusting() || !m_raycaster)
+        return false;
     if (m_three_point_mode)
         return on_circle_mouse(mouse_event);
 
@@ -538,7 +540,11 @@ void GLGizmoMeasure::data_changed(bool is_serializing)
     clear_circle_points();
     m_parent.toggle_sla_auxiliaries_visibility(false, nullptr, -1);
 
-    update_if_needed();
+    // Section caps are prepared during rendering, before this gizmo renders.
+    if (m_parent.is_section_view_enabled() || m_section_planes[0].is_active())
+        m_volumes_cache.clear();
+    else
+        update_if_needed();
 
     m_last_inv_zoom = 0.0f;
     m_last_plane_idx = -1;
@@ -676,7 +682,11 @@ void GLGizmoMeasure::on_render()
 //    if (m_parent.is_mouse_dragging())
 //        return;
 
+    if (m_parent.is_section_offset_adjusting())
+        return;
     update_if_needed();
+    if (!m_raycaster)
+        return;
 
     if (m_three_point_mode) {
         render_constructed_circle();
@@ -689,7 +699,7 @@ void GLGizmoMeasure::on_render()
     Vec3f position_on_model;
     Vec3f normal_on_model;
     size_t model_facet_idx;
-    const bool mouse_on_object = m_raycaster->unproject_on_mesh(m_mouse_pos, Transform3d::Identity(), camera, position_on_model, normal_on_model, nullptr, &model_facet_idx);
+    const bool mouse_on_object = unproject_measurement(m_mouse_pos, camera, position_on_model, normal_on_model, &model_facet_idx);
     const bool is_hovering_on_feature = m_mode == EMode::PointSelection && m_hover_id != -1;
 
     auto update_circle = [this, inv_zoom]() {
@@ -1142,6 +1152,15 @@ void GLGizmoMeasure::on_render()
     render_dimensioning();
 }
 
+bool GLGizmoMeasure::unproject_measurement(const Vec2d& mouse_pos, const Camera& camera,
+    Vec3f& hit, Vec3f& normal, size_t* facet, bool require_even_hits) const
+{
+    // Section surfaces may be open, particularly when the section fill is hidden.
+    const bool section_active = m_section_planes[0].is_active();
+    return m_raycaster->unproject_on_mesh(mouse_pos, Transform3d::Identity(), camera, hit, normal, nullptr,
+        facet, require_even_hits && !section_active, section_active);
+}
+
 std::optional<GLGizmoMeasure::CirclePointPick> GLGizmoMeasure::pick_circle_point(const Vec2d& mouse_pos) const
 {
     if (!m_raycaster || !m_measuring)
@@ -1151,7 +1170,7 @@ std::optional<GLGizmoMeasure::CirclePointPick> GLGizmoMeasure::pick_circle_point
     Vec3f hit, normal;
     size_t facet = 0;
     if (!m_snap_circle_vertices) {
-        if (m_raycaster->unproject_on_mesh(mouse_pos, Transform3d::Identity(), camera, hit, normal, nullptr, &facet))
+        if (unproject_measurement(mouse_pos, camera, hit, normal, &facet))
             return CirclePointPick{hit.cast<double>(), false};
         return std::nullopt;
     }
@@ -1166,7 +1185,7 @@ std::optional<GLGizmoMeasure::CirclePointPick> GLGizmoMeasure::pick_circle_point
     for (int y = -2; y <= 2; ++y) {
         for (int x = -2; x <= 2; ++x) {
             const Vec2d probe = mouse_pos + Vec2d(x, y) * (radius * 0.5);
-            if (m_raycaster->unproject_on_mesh(probe, Transform3d::Identity(), camera, hit, normal, nullptr, &facet, false)
+            if (unproject_measurement(probe, camera, hit, normal, &facet, false)
                 && facet < mesh.indices.size()) {
                 const auto& triangle = mesh.indices[facet];
                 for (int i = 0; i < 3; ++i)
@@ -1190,7 +1209,7 @@ std::optional<GLGizmoMeasure::CirclePointPick> GLGizmoMeasure::pick_circle_point
             continue;
         // Reject vertices hidden behind another surface, including the far rim of a hole.
         // A small pixel tolerance accounts for float ray intersections at triangle edges.
-        if (!m_raycaster->unproject_on_mesh(screen_pos, Transform3d::Identity(), camera, hit, normal, nullptr, nullptr, false)
+        if (!unproject_measurement(screen_pos, camera, hit, normal, nullptr, false)
             || (hit.cast<double>() - vertex).norm() > 0.25 * camera.get_inv_zoom())
             continue;
         closest_distance_sq = distance_sq;
@@ -1330,6 +1349,11 @@ void GLGizmoMeasure::set_three_point_mode(bool enabled)
 
 void GLGizmoMeasure::update_if_needed()
 {
+    const auto planes = m_parent.section_planes();
+    const bool section_active = planes[0].is_active();
+    const bool caps_visible = m_parent.section_caps_visible();
+    const bool section_changed = planes != m_section_planes || caps_visible != m_section_caps_visible;
+
     auto update_plane_models_cache = [this](const indexed_triangle_set& its) {
         m_plane_models_cache.clear();
         m_plane_models_cache.resize(m_measuring->get_num_of_planes(), GLModel());
@@ -1347,25 +1371,52 @@ void GLGizmoMeasure::update_if_needed()
         });
     };
 
-    auto do_update = [this, update_plane_models_cache](const std::vector<VolumeCacheItem>& volumes_cache, const Selection& selection) {
-        TriangleMesh composite_mesh;
+    auto do_update = [&](const std::vector<VolumeCacheItem>& volumes_cache) {
+        indexed_triangle_set composite_mesh;
         for (const auto& vol : volumes_cache) {
-//          if (selection.is_single_full_instance() && vol.volume->is_modifier())
-//              continue;
-
             TriangleMesh volume_mesh = vol.volume->mesh();
             volume_mesh.transform(vol.world_trafo);
 
             if (vol.world_trafo.matrix().determinant() < 0.0)
                 volume_mesh.flip_triangles();
 
-            composite_mesh.merge(volume_mesh);
+            if (section_active) {
+                auto visible_mesh = clip_section_surface(volume_mesh.its, planes[0], planes[1]);
+                if (caps_visible)
+                    m_parent.append_section_caps(vol.canvas_volume_idx, visible_mesh);
+                its_merge_vertices(visible_mesh);
+                its_remove_degenerate_faces(visible_mesh);
+                its_merge(composite_mesh, std::move(visible_mesh));
+            } else {
+                its_merge(composite_mesh, std::move(volume_mesh.its));
+            }
         }
 
-        m_measuring.reset(new Measure::Measuring(composite_mesh.its));
+        m_measuring = std::make_unique<Measure::Measuring>(composite_mesh);
         update_plane_models_cache(m_measuring->get_its());
-        m_raycaster.reset(new MeshRaycaster(std::make_shared<const TriangleMesh>(composite_mesh)));
+        m_raycaster.reset();
+        if (!composite_mesh.indices.empty())
+            m_raycaster = std::make_unique<MeshRaycaster>(std::make_shared<const TriangleMesh>(std::move(composite_mesh)));
         m_volumes_cache = volumes_cache;
+        m_section_planes = planes;
+        m_section_caps_visible = caps_visible;
+
+        if (section_changed || section_active) {
+            // Feature IDs and coordinates refer to the previous visible mesh.
+            clear_circle_points();
+            m_selected_features.reset();
+            m_parent.remove_raycasters_for_picking(SceneRaycaster::EType::Gizmo);
+            m_raycasters.clear();
+            m_selected_sphere_raycasters.clear();
+            m_curr_feature.reset();
+            m_curr_point_on_feature_position.reset();
+            m_last_plane_idx = -1;
+            m_last_circle.reset();
+            m_hover_id = -1;
+            m_mouse_left_down = false;
+            update_measurement_result();
+            m_parent.request_extra_frame();
+        }
     };
 
     const Selection& selection = m_parent.get_selection();
@@ -1386,7 +1437,9 @@ void GLGizmoMeasure::update_if_needed()
         const ModelVolume* vol = obj->volumes[volume_idx];
         const VolumeCacheItem item = {
             obj, inst, vol,
-            Geometry::translation_transform(selection.get_first_volume()->get_sla_shift_z() * Vec3d::UnitZ()) * inst->get_matrix() * vol->get_matrix()
+            section_active ? v->world_matrix() :
+                Geometry::translation_transform(selection.get_first_volume()->get_sla_shift_z() * Vec3d::UnitZ()) * inst->get_matrix() * vol->get_matrix(),
+            idx
         };
         volumes_cache.emplace_back(item);
     }
@@ -1394,8 +1447,8 @@ void GLGizmoMeasure::update_if_needed()
     if (m_state != On || volumes_cache.empty())
         return;
 
-    if (m_measuring == nullptr || m_volumes_cache != volumes_cache)
-        do_update(volumes_cache, selection);
+    if (m_measuring == nullptr || m_volumes_cache != volumes_cache || section_changed)
+        do_update(volumes_cache);
 }
 
 void GLGizmoMeasure::disable_scene_raycasters()
@@ -1542,11 +1595,13 @@ void GLGizmoMeasure::render_dimensioning()
               ImGuiPSWrap::to_ImU32(ColorRGBA(0.5f, 0.5f, 0.5f, 0.5f)));
             ImGui::SetCursorScreenPos({ pos.x + style.FramePadding.x, pos.y });
             ImGuiPureWrap::text(txt);
-            ImGui::SameLine();
-            if (m_imgui->image_button(ImGui::SliderFloatEditBtnIcon, _u8L("Edit to scale"))) {
-                m_editing_distance = true;
-                edit_value = curr_value;
-                m_imgui->requires_extra_frame();
+            if (!m_section_planes[0].is_active()) {
+                ImGui::SameLine();
+                if (m_imgui->image_button(ImGui::SliderFloatEditBtnIcon, _u8L("Edit to scale"))) {
+                    m_editing_distance = true;
+                    edit_value = curr_value;
+                    m_imgui->requires_extra_frame();
+                }
             }
             ImGuiPureWrap::end();
             ImGui::PopStyleVar(3);
@@ -2158,6 +2213,12 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
             last_h = win_h;
         if (last_y != y)
             last_y = y;
+    }
+
+    if (m_parent.is_section_offset_adjusting()) {
+        ImGuiPureWrap::text(_u8L("Release the section slider to measure."));
+        ImGuiPureWrap::end();
+        return;
     }
 
     bool three_point_mode = m_three_point_mode;
