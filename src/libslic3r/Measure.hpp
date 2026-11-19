@@ -106,7 +106,7 @@ class MeasuringImpl;
 class Measuring {
 public:
     // Construct the measurement object on a given its.
-    explicit Measuring(const indexed_triangle_set& its);
+    explicit Measuring(const indexed_triangle_set& its, bool allow_open_boundaries = false);
     ~Measuring();
 
 

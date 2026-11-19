@@ -101,7 +101,7 @@ static std::array<Vec3d, 3> orthonormal_basis(const Vec3d& v)
 
 class MeasuringImpl {
 public:
-    explicit MeasuringImpl(const indexed_triangle_set& its);
+    explicit MeasuringImpl(const indexed_triangle_set& its, bool allow_open_boundaries);
     struct PlaneData {
         std::vector<int> facets;
         std::vector<std::vector<Vec3d>> borders; // FIXME: should be in fact local in update_planes()
@@ -118,7 +118,7 @@ public:
     const indexed_triangle_set& get_its() const;
 
 private:
-    void update_planes();
+    void update_planes(bool allow_open_boundaries);
     void extract_features(int plane_idx);
     
     std::vector<PlaneData> m_planes;
@@ -131,10 +131,10 @@ private:
 
 
 
-MeasuringImpl::MeasuringImpl(const indexed_triangle_set& its)
+MeasuringImpl::MeasuringImpl(const indexed_triangle_set& its, bool allow_open_boundaries)
 : m_its(its)
 {
-    update_planes();
+    update_planes(allow_open_boundaries);
 
     // Extracting features will be done as needed.
     // To extract all planes at once, run the following:
@@ -145,7 +145,7 @@ MeasuringImpl::MeasuringImpl(const indexed_triangle_set& its)
 }
 
 
-void MeasuringImpl::update_planes()
+void MeasuringImpl::update_planes(bool allow_open_boundaries)
 {
     // Now we'll go through all the facets and append Points of facets sharing the same normal.
     // This part is still performed in mesh coordinate system.
@@ -211,7 +211,7 @@ void MeasuringImpl::update_planes()
     auto& planes = m_planes;
 
     tbb::parallel_for(tbb::blocked_range<size_t>(0, m_planes.size()),
-        [&planes, &face_to_plane, &face_neighbors, &sm](const tbb::blocked_range<size_t>& range) {
+        [&planes, &face_to_plane, &face_neighbors, &sm, allow_open_boundaries](const tbb::blocked_range<size_t>& range) {
             for (size_t plane_id = range.begin(); plane_id != range.end(); ++plane_id) {
 
         const auto& facets = planes[plane_id].facets;
@@ -225,9 +225,9 @@ void MeasuringImpl::update_planes()
                 // Every facet's edge which has a neighbor from a different plane is
                 // part of an edge that we want to walk around. Skip the others.
                 int neighbor_idx = face_neighbors[facets[face_id]][edge_id];
-                if (neighbor_idx == -1)
+                if (neighbor_idx == -1 && !allow_open_boundaries)
                     goto PLANE_FAILURE;
-                if (visited[face_id][edge_id] || face_to_plane[neighbor_idx] == plane_id) {
+                if (visited[face_id][edge_id] || (neighbor_idx >= 0 && face_to_plane[neighbor_idx] == plane_id)) {
                     visited[face_id][edge_id] = true;
                     continue;
                 }
@@ -253,23 +253,27 @@ void MeasuringImpl::update_planes()
 
                 do {
                     const Halfedge_index he_orig = he;
-                    he = sm.next_around_target(he);
-                    if (he.is_invalid())
-                        goto PLANE_FAILURE;
-
-                    // For broken meshes, the iteration might never get back to he_orig.
-                    // Remember all halfedges we saw to break out of such infinite loops.
+                    // Follow only coplanar neighbors around the target vertex. The next
+                    // edge belongs to this border if it meets a different plane or an opening.
                     boost::container::small_vector<Halfedge_index, 10> he_seen;
-
-                    while ( face_to_plane[sm.face(he)] == plane_id && he != he_orig) {
-                        he_seen.emplace_back(he);
-                        he = sm.next_around_target(he);
-                        if (he.is_invalid() || std::find(he_seen.begin(), he_seen.end(), he) != he_seen.end())
+                    for (;;) {
+                        const Halfedge_index next = sm.next(he);
+                        const Halfedge_index opposite = sm.opposite(next);
+                        if (opposite.is_invalid()) {
+                            if (!allow_open_boundaries || face_neighbors[next.face()][next.side()] >= 0)
+                                goto PLANE_FAILURE;
+                            he = next;
+                            break;
+                        }
+                        if (face_to_plane[opposite.face()] != plane_id || opposite == he_orig) {
+                            he = next;
+                            break;
+                        }
+                        if (std::find(he_seen.begin(), he_seen.end(), opposite) != he_seen.end())
                             goto PLANE_FAILURE;
+                        he_seen.emplace_back(opposite);
+                        he = opposite;
                     }
-                    he = sm.opposite(he);
-                    if (he.is_invalid())
-                        goto PLANE_FAILURE;
                     
                     Face_index fi = he.face();
                     auto face_it = std::lower_bound(facets.begin(), facets.end(), int(fi));
@@ -648,8 +652,8 @@ const indexed_triangle_set& MeasuringImpl::get_its() const
 
 
 
-Measuring::Measuring(const indexed_triangle_set& its)
-: priv{std::make_unique<MeasuringImpl>(its)}
+Measuring::Measuring(const indexed_triangle_set& its, bool allow_open_boundaries)
+: priv{std::make_unique<MeasuringImpl>(its, allow_open_boundaries)}
 {}
 
 Measuring::~Measuring() {}

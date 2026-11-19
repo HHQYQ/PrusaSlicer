@@ -1392,7 +1392,7 @@ void GLGizmoMeasure::update_if_needed()
             }
         }
 
-        m_measuring = std::make_unique<Measure::Measuring>(composite_mesh);
+        m_measuring = std::make_unique<Measure::Measuring>(composite_mesh, section_active);
         update_plane_models_cache(m_measuring->get_its());
         m_raycaster.reset();
         if (!composite_mesh.indices.empty())
