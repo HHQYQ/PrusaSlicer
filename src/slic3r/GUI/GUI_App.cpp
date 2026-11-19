@@ -850,13 +850,11 @@ void GUI_App::post_init()
             // preset_updater->sync downloads profile updates and than via event checks updates and incompatible presets. We need to run it on startup.
             // start before cw so it is canceled by cw if needed?
             this->get_preset_updater_wrapper()->sync_preset_updater(this, preset_bundle);
-            bool cw_showed = this->config_wizard_startup();
-            if (! cw_showed) {
-                // The CallAfter is needed as well, without it, GL extensions did not show.
-                // Also, we only want to show this when the wizard does not, so the new user
-                // sees something else than "we want something" on the first start.
-                show_send_system_info_dialog_if_needed();   
-            }  
+            const bool configured = m_app_conf_exists && !preset_bundle->printers.only_default_printers();
+            const bool wizard_shown = this->config_wizard_startup();
+            // Keep the system information prompt out of unconfigured startup, as before.
+            if (configured && !wizard_shown)
+                show_send_system_info_dialog_if_needed();
             // app version check is asynchronous and triggers blocking dialog window, better call it last
             this->app_version_check(false);
         });
