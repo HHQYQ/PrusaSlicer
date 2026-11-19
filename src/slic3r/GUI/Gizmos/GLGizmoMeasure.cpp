@@ -281,6 +281,71 @@ private:
     }
 };
 
+// Draw on the canvas background list so the geometry stays legible without covering tool panels.
+static constexpr ImU32 MEASUREMENT_OUTLINE = IM_COL32(24, 28, 35, 255);
+static constexpr ImU32 MEASUREMENT_HOVER = IM_COL32(255, 215, 48, 255);
+static constexpr ImU32 MEASUREMENT_PICKED = IM_COL32(48, 227, 239, 255);
+
+static std::optional<ImVec2> measurement_screen_point(const Vec3d& point, const Matrix4d& projection_view,
+    const std::array<int, 4>& viewport)
+{
+    const Vec4d clip = TransformHelper::world_to_clip(point, projection_view);
+    if (!clip.allFinite() || clip.w() <= 0.0 || clip.z() < -clip.w() || clip.z() > clip.w())
+        return std::nullopt;
+    const Vec2d screen = TransformHelper::ndc_to_ss(TransformHelper::clip_to_ndc(clip), viewport);
+    return ImVec2(float(screen.x()), float(viewport[1] + viewport[3] - screen.y()));
+}
+
+static void draw_measurement_feature_outline(const Measure::SurfaceFeature& feature, const Camera& camera)
+{
+    const Matrix4d projection_view = camera.get_projection_matrix().matrix() * camera.get_view_matrix().matrix();
+    const auto& viewport = camera.get_viewport();
+    ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+
+    if (feature.get_type() == Measure::SurfaceFeatureType::Edge) {
+        const auto [start, end] = feature.get_edge();
+        const auto from = measurement_screen_point(start, projection_view, viewport);
+        const auto to = measurement_screen_point(end, projection_view, viewport);
+        if (from && to) {
+            draw_list->AddLine(*from, *to, MEASUREMENT_OUTLINE, 9.0f);
+            draw_list->AddLine(*from, *to, MEASUREMENT_HOVER, 5.0f);
+        }
+    } else if (feature.get_type() == Measure::SurfaceFeatureType::Circle) {
+        constexpr size_t segments = 64;
+        std::array<ImVec2, segments> points;
+        const auto [center, radius, normal] = feature.get_circle();
+        const Vec3d axis_x = Measure::get_orthogonal(normal, true);
+        const Vec3d axis_y = normal.normalized().cross(axis_x);
+        for (size_t i = 0; i < segments; ++i) {
+            const double angle = 2.0 * M_PI * i / segments;
+            const Vec3d point = center + radius * (std::cos(angle) * axis_x + std::sin(angle) * axis_y);
+            const auto screen = measurement_screen_point(point, projection_view, viewport);
+            if (!screen)
+                return;
+            points[i] = *screen;
+        }
+        draw_list->AddPolyline(points.data(), int(points.size()), MEASUREMENT_OUTLINE, true, 9.0f);
+        draw_list->AddPolyline(points.data(), int(points.size()), MEASUREMENT_HOVER, true, 5.0f);
+    }
+}
+
+static void draw_circle_hover_marker(ImDrawList& draw_list, const ImVec2& point, bool snapped)
+{
+    // A diamond marks vertex snapping. A circle marks a point on the mesh surface.
+    constexpr float radius = 11.0f;
+    const auto draw_outline = [&](ImU32 color, float width) {
+        if (snapped)
+            draw_list.AddQuad({point.x, point.y - radius}, {point.x + radius, point.y},
+                {point.x, point.y + radius}, {point.x - radius, point.y}, color, width);
+        else
+            draw_list.AddCircle(point, radius, color, 32, width);
+        draw_list.AddLine({point.x - 5.0f, point.y}, {point.x + 5.0f, point.y}, color, width);
+        draw_list.AddLine({point.x, point.y - 5.0f}, {point.x, point.y + 5.0f}, color, width);
+    };
+    draw_outline(MEASUREMENT_OUTLINE, 5.5f);
+    draw_outline(MEASUREMENT_HOVER, 2.5f);
+}
+
 TransformHelper::Cache TransformHelper::s_cache = { { 0, 0, 0, 0 }, Matrix4d::Identity(), Transform3d::Identity() };
 
 GLGizmoMeasure::GLGizmoMeasure(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id)
@@ -983,6 +1048,10 @@ void GLGizmoMeasure::on_render()
         }
 
         render_feature(*m_curr_feature, colors, inv_zoom, true, true);
+        if (!ImGui::GetIO().WantCaptureMouse &&
+            ((m_hover_id == EDGE_ID && m_curr_feature->get_type() == Measure::SurfaceFeatureType::Edge) ||
+             (m_hover_id == CIRCLE_ID && m_curr_feature->get_type() == Measure::SurfaceFeatureType::Circle)))
+            draw_measurement_feature_outline(*m_curr_feature, camera);
     }
 
     if (m_selected_features.first.feature.has_value() && (!m_curr_feature.has_value() || *m_curr_feature != *m_selected_features.first.feature)) {
@@ -1073,7 +1142,7 @@ void GLGizmoMeasure::on_render()
     render_dimensioning();
 }
 
-std::optional<Vec3d> GLGizmoMeasure::pick_circle_point(const Vec2d& mouse_pos) const
+std::optional<GLGizmoMeasure::CirclePointPick> GLGizmoMeasure::pick_circle_point(const Vec2d& mouse_pos) const
 {
     if (!m_raycaster || !m_measuring)
         return std::nullopt;
@@ -1084,10 +1153,11 @@ std::optional<Vec3d> GLGizmoMeasure::pick_circle_point(const Vec2d& mouse_pos) c
     if (!m_raycaster->unproject_on_mesh(mouse_pos, Transform3d::Identity(), camera, hit, normal, nullptr, &facet))
         return std::nullopt;
 
-    Vec3d position = hit.cast<double>();
+    const Vec3d position = hit.cast<double>();
+    CirclePointPick pick{position, false};
     const indexed_triangle_set& mesh = m_measuring->get_its();
     if (!m_snap_circle_vertices || facet >= mesh.indices.size())
-        return position;
+        return pick;
 
     const Matrix4d projection_view = camera.get_projection_matrix().matrix() * camera.get_view_matrix().matrix();
     const auto& viewport = camera.get_viewport();
@@ -1099,29 +1169,30 @@ std::optional<Vec3d> GLGizmoMeasure::pick_circle_point(const Vec2d& mouse_pos) c
         const double distance_sq = (TransformHelper::world_to_ss(vertex, projection_view, viewport) - screen_hit).squaredNorm();
         if (distance_sq < closest_distance_sq) {
             closest_distance_sq = distance_sq;
-            position = vertex;
+            pick = {vertex, true};
         }
     }
-    return position;
+    return pick;
 }
 
 bool GLGizmoMeasure::on_circle_mouse(const wxMouseEvent& event)
 {
     if (event.LeftDown() && !event.CmdDown()) {
-        const auto position = pick_circle_point(m_mouse_pos);
-        if (!position)
+        const auto pick = pick_circle_point(m_mouse_pos);
+        if (!pick)
             return false;
+        const Vec3d& position = pick->position;
 
         m_mouse_left_down = true;
         if (m_circle_points.size() < 3) {
             m_invalid_circle_pick = std::any_of(m_circle_points.begin(), m_circle_points.end(),
-                [&](const Vec3d& point) { return (point - *position).norm() <= EPSILON; });
+                [&](const Vec3d& point) { return (point - position).norm() <= EPSILON; });
             if (!m_invalid_circle_pick && m_circle_points.size() == 2) {
-                m_constructed_circle = Measure::circle_from_three_points(m_circle_points[0], m_circle_points[1], *position);
+                m_constructed_circle = Measure::circle_from_three_points(m_circle_points[0], m_circle_points[1], position);
                 m_invalid_circle_pick = !m_constructed_circle;
             }
             if (!m_invalid_circle_pick)
-                m_circle_points.push_back(*position);
+                m_circle_points.push_back(position);
             m_parent.request_extra_frame();
         }
         return true;
@@ -1176,16 +1247,27 @@ void GLGizmoMeasure::render_constructed_circle()
         m_circle_outline.set_color(SELECTED_1ST_COLOR);
         m_circle_outline.render();
         render_point(center, SELECTED_2ND_COLOR);
-    } else if (!wxGetMouseState().LeftIsDown() && !ImGui::GetIO().WantCaptureMouse) {
-        if (const auto preview = pick_circle_point(m_mouse_pos))
-            render_point(*preview, GLVolume::SELECTED_COLOR);
     }
-
-    for (const Vec3d& point : m_circle_points)
-        render_point(point, SELECTED_1ST_COLOR);
     shader->stop_using();
     if (restore_depth_test)
         glsafe(::glEnable(GL_DEPTH_TEST));
+
+    const Matrix4d projection_view = camera.get_projection_matrix().matrix() * view.matrix();
+    const auto& viewport = camera.get_viewport();
+    ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+    for (const Vec3d& point : m_circle_points) {
+        if (const auto screen = measurement_screen_point(point, projection_view, viewport)) {
+            draw_list->AddCircleFilled(*screen, 8.0f, MEASUREMENT_OUTLINE, 24);
+            draw_list->AddCircleFilled(*screen, 5.5f, MEASUREMENT_PICKED, 24);
+        }
+    }
+
+    if (!m_constructed_circle && !wxGetMouseState().LeftIsDown() && !ImGui::GetIO().WantCaptureMouse) {
+        if (const auto pick = pick_circle_point(m_mouse_pos)) {
+            if (const auto screen = measurement_screen_point(pick->position, projection_view, viewport))
+                draw_circle_hover_marker(*draw_list, *screen, pick->snapped_to_vertex);
+        }
+    }
 }
 
 void GLGizmoMeasure::clear_circle_points()

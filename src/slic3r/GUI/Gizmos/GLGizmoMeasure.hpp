@@ -153,7 +153,12 @@ class GLGizmoMeasure : public GLGizmoBase
     std::optional<Measure::SurfaceFeature> m_constructed_circle;
     GLModel m_circle_outline;
 
-    std::optional<Vec3d> pick_circle_point(const Vec2d& mouse_pos) const;
+    struct CirclePointPick {
+        Vec3d position;
+        bool snapped_to_vertex;
+    };
+
+    std::optional<CirclePointPick> pick_circle_point(const Vec2d& mouse_pos) const;
     bool on_circle_mouse(const wxMouseEvent& event);
     void render_constructed_circle();
     void render_circle_options();
