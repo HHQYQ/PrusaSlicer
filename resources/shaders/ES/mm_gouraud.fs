@@ -28,11 +28,14 @@ uniform mat4 view_model_matrix;
 uniform mat3 view_normal_matrix;
 
 varying vec3 clipping_planes_dots;
+varying float compound_clipping_dot;
+uniform bool use_compound_clipping;
 varying vec4 model_pos;
 
 void main()
 {
-    if (any(lessThan(clipping_planes_dots, ZERO)))
+    if (clipping_planes_dots.y < 0.0 || clipping_planes_dots.z < 0.0 ||
+        (clipping_planes_dots.x < 0.0 && (!use_compound_clipping || compound_clipping_dot < 0.0)))
         discard;
     vec3  color = uniform_color.rgb;
     float alpha = uniform_color.a;

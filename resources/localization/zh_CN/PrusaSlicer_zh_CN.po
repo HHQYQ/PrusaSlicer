@@ -29507,3 +29507,21 @@ msgstr "关闭当前工具后恢复剖面视图。"
 
 msgid "Add a model to display a section."
 msgstr "添加模型后即可查看剖面。"
+
+msgid "Only visible mesh vertices are accepted. Move closer until the yellow diamond appears."
+msgstr "仅接受可见的网格顶点。靠近目标，出现黄色菱形后再单击。"
+
+msgid "No valid point selected. Choose a visible vertex; the three points must be distinct and not nearly collinear."
+msgstr "未选中有效点。请选取可见顶点；三点不能重复或接近共线。"
+
+msgid "Undo last point"
+msgstr "撤销上一个点"
+
+msgid "Compound section (remove a quarter)"
+msgstr "复合平面剖切（切去一个角区）"
+
+msgid "Second section plane"
+msgstr "第二剖切平面"
+
+msgid "Reverse second section direction"
+msgstr "反转第二剖切方向"

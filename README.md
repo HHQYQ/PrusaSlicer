@@ -1,3 +1,25 @@
+# PrusaSlicer 2.9.7 — 三点测圆与复合剖切版
+
+这是基于 PrusaSlicer **2.9.7 稳定版**的独立修改版，保留上游 AGPL-3.0-or-later 许可。
+
+- [下载 Windows x64 安装包和便携版](https://github.com/HHQYQ/PrusaSlicer/releases/latest)
+- [修改版源码](https://github.com/HHQYQ/PrusaSlicer/tree/codex/prusaslicer-2.9.7-three-point-circle)
+- [Windows 构建与安装验证](https://github.com/HHQYQ/PrusaSlicer/actions/workflows/build_windows.yml)
+
+## 2.9.7.5 使用说明
+
+**三点测圆**：导入 STL、选中模型，打开左侧「测量」工具（U），勾选「三点测圆」。默认只接受可见网格顶点；鼠标附近的可见三角形共同参与候选搜索，靠近目标出现黄色菱形后单击。没有候选顶点时不会自动改选面内点。三个已选点用青色标记及 1、2、3 编号显示；误选时点击「撤销上一个点」。沿同一圆边选择三个分散的点后显示直径、半径和圆心。取消「吸附到网格顶点」可自由选面内点。测量精度受 STL 网格精度和取点分布影响。
+
+**单位**：普通测量、三点测圆和剖切偏移都随英寸设置换算，单位符号固定显示为 `in` 或 `mm`。
+
+**剖切**：点击左侧与测量工具同列的剖切立方体图标，打开正交投影剖面面板。选择 YZ、XZ、XY 主平面，可移动位置和反转方向。「复合平面剖切」添加第二个垂直平面，分别控制两个平面的位置和方向，切去它们共同限定的一个角区，显示两个填充剖面。点击「等轴测」可沿切去的角区观察内部；该按钮只改变观察方向，复合剖切由独立复选框控制。剖切只影响显示。打开测量、切割等编辑工具时剖切暂停，关闭工具后恢复。
+
+**本地运行**：安装 `*-Setup.exe`；也可解压 `*-Portable.zip` 到可写目录后运行 `prusa-slicer.exe`。安装包沿用原 AppId，支持覆盖升级并保留用户预设。`*-Source.zip` 是与安装包对应的完整源码；本地编译按下方上游 Windows 指南进行，需要 Visual Studio C++ 工具链和依赖库。
+
+每次发布的 SHA256.txt 同时记录安装包、便携版及源码包校验值。CI 检查着色器编译、复合剖切 GPU 行为、Windows 编译、安装、覆盖升级和命令行启动；真实 STL 的交互取点与显卡显示效果仍需实机复核。
+
+---
+
 
 ![PrusaSlicer logo](/resources/icons/PrusaSlicer.png?raw=true)
 

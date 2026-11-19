@@ -835,6 +835,8 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType type, bool disab
             shader->set_uniform("volume_world_matrix", world_matrix);
             shader->set_uniform("volume_mirrored", is_left_handed);
             shader->set_uniform("clipping_plane", m_clipping_plane);
+            shader->set_uniform("compound_clipping_plane", m_compound_clipping_plane);
+            shader->set_uniform("use_compound_clipping", m_use_compound_clipping);
             shader->set_uniform("z_range", m_z_range);
             shader->set_uniform("view_model_matrix", view_matrix * world_matrix);
             shader->set_uniform("projection_matrix", projection_matrix);
@@ -873,12 +875,15 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType type, bool disab
             if (is_left_handed)
                 glsafe(::glFrontFace(GL_CCW));
 
+            shader->set_uniform("use_compound_clipping", false);
             shader->stop_using();
         }
         else {
             shader->start_using();
             shader->set_uniform("z_range", m_z_range);
             shader->set_uniform("clipping_plane", m_clipping_plane);
+            shader->set_uniform("compound_clipping_plane", m_compound_clipping_plane);
+            shader->set_uniform("use_compound_clipping", m_use_compound_clipping);
             shader->set_uniform("use_color_clip_plane", m_use_color_clip_plane);
             shader->set_uniform("color_clip_plane", m_color_clip_plane);
             shader->set_uniform("uniform_color_clip_plane_1", m_color_clip_plane_colors[0]);
@@ -913,6 +918,7 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType type, bool disab
 
             glsafe(::glBindBuffer(GL_ARRAY_BUFFER, 0));
             glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+            shader->set_uniform("use_compound_clipping", false);
             shader->stop_using();
         }
     }

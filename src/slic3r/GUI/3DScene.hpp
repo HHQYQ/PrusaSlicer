@@ -381,6 +381,8 @@ private:
 
     // plane coeffs for clipping in shaders
     std::array<double, 4> m_clipping_plane;
+    std::array<double, 4> m_compound_clipping_plane{ 0.0, 0.0, 1.0, DBL_MAX };
+    bool m_use_compound_clipping{ false };
 
     // plane coeffs for render volumes with different colors in shaders
     // used by cut gizmo
@@ -464,6 +466,11 @@ public:
 
     void set_z_range(float min_z, float max_z) { m_z_range[0] = min_z; m_z_range[1] = max_z; }
     void set_clipping_plane(const std::array<double, 4>& coeffs) { m_clipping_plane = coeffs; }
+
+    void set_compound_clipping_plane(const std::array<double, 4>& coeffs, bool enabled) {
+        m_compound_clipping_plane = coeffs;
+        m_use_compound_clipping = enabled;
+    }
 
     const std::array<float, 2>& get_z_range() const { return m_z_range; }
     const std::array<double, 4>& get_clipping_plane() const { return m_clipping_plane; }

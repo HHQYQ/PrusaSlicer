@@ -5740,7 +5740,8 @@ void GLCanvas3D::_picking_pass()
     m_hover_volume_idxs.clear();
 
     const ClippingPlane clipping_plane = _object_clipping_plane().inverted_normal();
-    const SceneRaycaster::HitResult hit = m_scene_raycaster.hit(m_mouse.position, wxGetApp().plater()->get_camera(), &clipping_plane);
+    const SceneRaycaster::HitResult hit = m_scene_raycaster.hit(m_mouse.position, wxGetApp().plater()->get_camera(),
+        &clipping_plane, m_section_view.second_plane.is_active() ? &m_section_view.second_plane : nullptr);
     if (hit.is_valid()) {
         switch (hit.type)
         {
@@ -6177,6 +6178,15 @@ Vec3d GLCanvas3D::SectionView::normal() const
     return normal;
 }
 
+Vec3d GLCanvas3D::SectionView::second_normal() const
+{
+    Vec3d normal = Vec3d::Zero();
+    const int second = second_axis();
+    const double sign = second == 1 ? -1.0 : 1.0;
+    normal[second] = second_reversed ? -sign : sign;
+    return normal;
+}
+
 bool GLCanvas3D::can_section_view() const
 {
     return m_section_view.enabled || std::any_of(m_volumes.volumes.begin(), m_volumes.volumes.end(),
@@ -6203,6 +6213,8 @@ void GLCanvas3D::_orient_section_view(bool isometric)
     if (isometric) {
         direction = Vec3d(1.0, -1.0, 1.0);
         direction[m_section_view.axis] = normal[m_section_view.axis];
+        if (m_section_view.compound)
+            direction[m_section_view.second_axis()] = m_section_view.second_normal()[m_section_view.second_axis()];
         direction.normalize();
     } else if (m_section_view.axis == 2) {
         up = normal.z() * Vec3d::UnitY();
@@ -6218,6 +6230,7 @@ void GLCanvas3D::_update_section_view()
 {
     SectionView& section = m_section_view;
     section.plane = ClippingPlane::ClipsNothing();
+    section.second_plane = ClippingPlane::ClipsNothing();
     section.bounds.reset();
     if (!section.enabled || m_gizmos.is_running() || m_layers_editing.is_enabled())
         return;
@@ -6235,6 +6248,14 @@ void GLCanvas3D::_update_section_view()
     const double position = section.bounds.center()[axis] + section.offset;
     const Vec3d normal = section.normal();
     section.plane = ClippingPlane(normal, position * normal[axis]);
+    if (section.compound) {
+        const int second = section.second_axis();
+        const double half_second_span = 0.5 * section.bounds.size()[second];
+        section.second_offset = std::clamp(section.second_offset, -half_second_span, half_second_span);
+        const Vec3d second_normal = section.second_normal();
+        const double second_position = section.bounds.center()[second] + section.second_offset;
+        section.second_plane = ClippingPlane(second_normal, second_position * second_normal[second]);
+    }
 }
 
 ClippingPlane GLCanvas3D::_object_clipping_plane() const
@@ -6254,29 +6275,38 @@ void GLCanvas3D::_render_section_caps()
     if (section.adjusting_offset)
         return;
 
-    const int axis = section.axis;
-    const double position = section.plane.get_offset() * section.plane.get_normal()[axis];
-    section.caps.resize(m_volumes.volumes.size());
+    const size_t plane_count = section.compound ? 2 : 1;
+    section.caps.resize(plane_count * m_volumes.volumes.size());
     for (size_t idx = 0; idx < m_volumes.volumes.size(); ++idx) {
         const GLVolume& volume = *m_volumes.volumes[idx];
-        if (!is_section_model(volume)) {
-            section.caps[idx].reset();
-            continue;
+        for (size_t p = 0; p < plane_count; ++p) {
+            std::unique_ptr<MeshClipper>& cap = section.caps[plane_count * idx + p];
+            if (!is_section_model(volume)) {
+                cap.reset();
+                continue;
+            }
+
+            const ClippingPlane& plane = p == 0 ? section.plane : section.second_plane;
+            const int axis = p == 0 ? section.axis : section.second_axis();
+            const double position = plane.get_offset() * plane.get_normal()[axis];
+            const BoundingBoxf3& bounds = volume.transformed_bounding_box();
+            if (position <= bounds.min[axis] || position >= bounds.max[axis])
+                continue;
+            if (!cap)
+                cap = std::make_unique<MeshClipper>();
+
+            const auto& mesh = volume.mesh_raycaster->mesh_ptr();
+            cap->set_mesh(std::shared_ptr<const indexed_triangle_set>(mesh, &mesh->its));
+            cap->set_transformation(Geometry::Transformation(volume.world_matrix()));
+            cap->set_plane(plane);
+            // Only the part next to the removed quadrant is an exposed cut face.
+            // MeshClipper's limiting plane uses n.dot(point) + offset >= 0.
+            const ClippingPlane& other = p == 0 ? section.second_plane : section.plane;
+            cap->set_limiting_plane(section.compound
+                ? ClippingPlane(other.get_normal(), -other.get_offset())
+                : ClippingPlane::ClipsNothing());
+            cap->render_cut(p == 0 ? ColorRGBA(0.95f, 0.49f, 0.15f, 1.f) : ColorRGBA(0.95f, 0.65f, 0.25f, 1.f));
         }
-
-        const BoundingBoxf3& bounds = volume.transformed_bounding_box();
-        if (position <= bounds.min[axis] || position >= bounds.max[axis])
-            continue;
-
-        std::unique_ptr<MeshClipper>& cap = section.caps[idx];
-        if (!cap)
-            cap = std::make_unique<MeshClipper>();
-
-        const auto& mesh = volume.mesh_raycaster->mesh_ptr();
-        cap->set_mesh(std::shared_ptr<const indexed_triangle_set>(mesh, &mesh->its));
-        cap->set_transformation(Geometry::Transformation(volume.world_matrix()));
-        cap->set_plane(section.plane);
-        cap->render_cut(ColorRGBA(0.95f, 0.49f, 0.15f, 1.f));
     }
 }
 
@@ -6298,25 +6328,45 @@ void GLCanvas3D::_render_section_controls()
                 : _u8L("Add a model to display a section.");
             ImGuiPureWrap::text_wrapped(status.c_str(), width);
         } else {
+            const bool compound_changed = ImGuiPureWrap::checkbox(_u8L("Compound section (remove a quarter)"), section.compound);
             const bool axis_changed = ImGuiPureWrap::combo(_u8L("Section plane"),
                 { "YZ (X)", "XZ (Y)", "XY (Z)" }, section.axis);
-            if (axis_changed)
+            if (axis_changed) {
                 section.offset = 0.0;
-            const double half_span = 0.5 * section.bounds.size()[section.axis];
-            const double min_offset = -half_span;
+                section.second_offset = 0.0;
+            }
+            const bool use_inches = wxGetApp().app_config->get_bool("use_inches");
+            const double unit_scale = use_inches ? ObjectManipulation::mm_to_in : 1.0;
+            bool adjusting_offset = false;
+            const auto offset_slider = [&](const char* id, int axis, double& offset) {
+                const double half_span = 0.5 * section.bounds.size()[axis] * unit_scale;
+                const double min_offset = -half_span;
+                double display_offset = offset * unit_scale;
+                ImGui::SetNextItemWidth(width);
+                const bool changed = ImGui::SliderScalar(id, ImGuiDataType_Double,
+                    &display_offset, &min_offset, &half_span, use_inches ? "%.3f in" : "%.3f mm");
+                adjusting_offset = adjusting_offset || ImGui::IsItemActive();
+                if (changed) {
+                    offset = display_offset / unit_scale;
+                    request_extra_frame();
+                }
+            };
             ImGuiPureWrap::text(_u8L("Section offset from center"));
-            ImGui::SetNextItemWidth(width);
-            const bool offset_changed = ImGui::SliderScalar("##section_offset", ImGuiDataType_Double,
-                &section.offset, &min_offset, &half_span, "%.3f mm");
-            const bool adjusting_offset = ImGui::IsItemActive();
-            if (offset_changed || section.adjusting_offset != adjusting_offset)
+            offset_slider("##section_offset", section.axis, section.offset);
+            const bool reversed = ImGuiPureWrap::checkbox(_u8L("Reverse section direction"), section.reversed);
+            bool second_reversed = false;
+            if (section.compound) {
+                const std::array<std::string, 3> plane_names = { "YZ (X)", "XZ (Y)", "XY (Z)" };
+                ImGuiPureWrap::text(_u8L("Second section plane") + ": " + plane_names[section.second_axis()]);
+                offset_slider("##second_section_offset", section.second_axis(), section.second_offset);
+                second_reversed = ImGuiPureWrap::checkbox(_u8L("Reverse second section direction"), section.second_reversed);
+            }
+            if (section.adjusting_offset != adjusting_offset)
                 request_extra_frame();
             section.adjusting_offset = adjusting_offset;
-
-            const bool reversed = ImGuiPureWrap::checkbox(_u8L("Reverse section direction"), section.reversed);
             if (ImGuiPureWrap::checkbox(_u8L("Show section cap"), section.show_cap))
                 request_extra_frame();
-            if (axis_changed || reversed)
+            if (axis_changed || reversed || second_reversed || compound_changed)
                 _orient_section_view(section.isometric);
 
             if (ImGuiPureWrap::button(_u8L("Normal to section")))
@@ -6384,6 +6434,8 @@ void GLCanvas3D::_render_objects(GLVolumeCollection::ERenderType type)
         m_volumes.set_z_range(-FLT_MAX, FLT_MAX);
 
     m_volumes.set_clipping_plane(m_camera_clipping_plane.get_data());
+    m_volumes.set_compound_clipping_plane(m_section_view.second_plane.inverted_normal().get_data(),
+        m_section_view.second_plane.is_active());
     const bool show_uncut_overlays = !m_section_view.plane.is_active() && !m_gizmos.is_hiding_instances();
     m_volumes.set_show_sinking_contours(show_uncut_overlays);
     m_volumes.set_show_non_manifold_edges(show_uncut_overlays && m_gizmos.get_current_type() != GLGizmosManager::Simplify);
@@ -6937,7 +6989,10 @@ void GLCanvas3D::_render_volumes_for_picking(const Camera& camera) const
                 shader->set_uniform("volume_world_matrix", volume.first->world_matrix());
                 shader->set_uniform("z_range", m_volumes.get_z_range());
                 shader->set_uniform("clipping_plane", clipping_plane.get_data());
+                shader->set_uniform("compound_clipping_plane", m_section_view.second_plane.inverted_normal().get_data());
+                shader->set_uniform("use_compound_clipping", m_section_view.second_plane.is_active());
                 volume.first->render();
+                shader->set_uniform("use_compound_clipping", false);
                 shader->stop_using();
           }
 	  }

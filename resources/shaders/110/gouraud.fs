@@ -37,6 +37,8 @@ uniform SlopeDetection slope;
 uniform PrintVolumeDetection print_volume;
 
 varying vec3 clipping_planes_dots;
+varying float compound_clipping_dot;
+uniform bool use_compound_clipping;
 varying float color_clip_plane_dot;
 
 // x = diffuse, y = specular;
@@ -48,7 +50,8 @@ varying vec3 eye_normal;
 
 void main()
 {
-    if (any(lessThan(clipping_planes_dots, ZERO)))
+    if (clipping_planes_dots.y < 0.0 || clipping_planes_dots.z < 0.0 ||
+        (clipping_planes_dots.x < 0.0 && (!use_compound_clipping || compound_clipping_dot < 0.0)))
         discard;
 
     vec4 color;

@@ -86,6 +86,7 @@ public:
         Emboss,
         Svg,
         Simplify,
+        Section,
         Undefined
     };
 

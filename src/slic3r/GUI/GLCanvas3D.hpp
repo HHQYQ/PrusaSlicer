@@ -508,16 +508,22 @@ private:
     struct SectionView {
         bool enabled{ false };
         bool isometric{ false };
+        bool compound{ false };
+        bool second_reversed{ false };
         bool reversed{ false };
         bool show_cap{ true };
         bool adjusting_offset{ false };
         int axis{ 1 };
         double offset{ 0.0 };
+        double second_offset{ 0.0 };
         BoundingBoxf3 bounds;
         ClippingPlane plane;
+        ClippingPlane second_plane;
         std::vector<std::unique_ptr<MeshClipper>> caps;
 
         Vec3d normal() const;
+        int second_axis() const { return (axis + 1) % 3; }
+        Vec3d second_normal() const;
     } m_section_view;
     bool m_use_clipping_planes;
     std::array<SlaCap, 2> m_sla_caps;

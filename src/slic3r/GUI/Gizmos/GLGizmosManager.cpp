@@ -40,6 +40,24 @@
 namespace Slic3r {
 namespace GUI {
 
+namespace {
+
+// A view toggle in the same toolbar as Measure; it does not own an editing gizmo.
+class GLSectionViewButton final : public GLGizmoBase
+{
+public:
+    explicit GLSectionViewButton(GLCanvas3D& parent)
+        : GLGizmoBase(parent, "section_view.svg", 15) {}
+
+protected:
+    bool on_init() override { return true; }
+    std::string on_get_name() const override { return _u8L("Section View"); }
+    bool on_is_activable() const override { return m_parent.can_section_view(); }
+    void on_render() override {}
+};
+
+} // namespace
+
 const float GLGizmosManager::Default_Icons_Size = 52;// 64;
 
 GLGizmosManager::GLGizmosManager(GLCanvas3D& parent)
@@ -60,6 +78,12 @@ std::vector<size_t> GLGizmosManager::get_selectable_idxs() const
     for (size_t i=0; i<m_gizmos.size(); ++i)
         if (m_gizmos[i]->is_selectable())
             out.push_back(i);
+    const auto section = std::find(out.begin(), out.end(), size_t(Section));
+    if (section != out.end()) {
+        out.erase(section);
+        const auto measure = std::find(out.begin(), out.end(), size_t(Measure));
+        out.insert(measure == out.end() ? out.end() : measure + 1, size_t(Section));
+    }
     return out;
 }
 
@@ -120,6 +144,7 @@ bool GLGizmosManager::init()
     m_gizmos.emplace_back(new GLGizmoEmboss(m_parent));
     m_gizmos.emplace_back(new GLGizmoSVG(m_parent));
     m_gizmos.emplace_back(new GLGizmoSimplify(m_parent));
+    m_gizmos.emplace_back(new GLSectionViewButton(m_parent));
 
     m_common_gizmos_data.reset(new CommonGizmosDataPool(&m_parent));
 
@@ -191,6 +216,15 @@ void GLGizmosManager::reset_all_states()
 
 bool GLGizmosManager::open_gizmo(EType type)
 {
+    if (type == Section) {
+        if (!m_parent.can_section_view())
+            return false;
+        const bool enabled = !m_parent.is_section_view_enabled();
+        if (enabled && !activate_gizmo(Undefined))
+            return false;
+        m_parent.set_section_view(enabled, true);
+        return true;
+    }
     int idx = static_cast<int>(type);
 
     // re-open same type cause closing
@@ -840,12 +874,13 @@ void GLGizmosManager::do_render_overlay() const
     for (size_t idx : selectable_idxs) {
         GLGizmoBase* gizmo = m_gizmos[idx].get();
 
-        if (m_current == idx)
+        const bool active = m_current == idx || (idx == Section && m_parent.is_section_view_enabled());
+        if (active)
             render_background(top_x - margin_w, top_y + border_h, top_x + icons_size_x + margin_w, top_y - icons_size_y - border_h, border_w, border_h);
 
         const unsigned int sprite_id = gizmo->get_sprite_id();
         // higlighted state needs to be decided first so its highlighting in every other state
-        const int icon_idx = (m_highlight.first == idx ? (m_highlight.second ? 4 : 5) : (m_current == idx) ? /*2*/1 : ((m_hover == idx) ? 1 : (gizmo->is_activable() ? 0 : 3)));
+        const int icon_idx = (m_highlight.first == idx ? (m_highlight.second ? 4 : 5) : active ? /*2*/1 : ((m_hover == idx) ? 1 : (gizmo->is_activable() ? 0 : 3)));
 
         const float u_left   = u_offset + icon_idx * du;
         const float u_right  = u_left + du - u_offset;

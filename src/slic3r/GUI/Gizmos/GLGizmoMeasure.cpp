@@ -1150,28 +1150,53 @@ std::optional<GLGizmoMeasure::CirclePointPick> GLGizmoMeasure::pick_circle_point
     const Camera& camera = wxGetApp().plater()->get_camera();
     Vec3f hit, normal;
     size_t facet = 0;
-    if (!m_raycaster->unproject_on_mesh(mouse_pos, Transform3d::Identity(), camera, hit, normal, nullptr, &facet))
+    if (!m_snap_circle_vertices) {
+        if (m_raycaster->unproject_on_mesh(mouse_pos, Transform3d::Identity(), camera, hit, normal, nullptr, &facet))
+            return CirclePointPick{hit.cast<double>(), false};
         return std::nullopt;
+    }
 
-    const Vec3d position = hit.cast<double>();
-    CirclePointPick pick{position, false};
-    const indexed_triangle_set& mesh = m_measuring->get_its();
-    if (!m_snap_circle_vertices || facet >= mesh.indices.size())
-        return pick;
-
+    // Probe nearby visible facets as well as the one directly under the cursor.
+    // This also works just outside a silhouette, without searching the entire mesh.
+    const double radius = 12.0 * m_imgui->get_style_scaling();
     const Matrix4d projection_view = camera.get_projection_matrix().matrix() * camera.get_view_matrix().matrix();
     const auto& viewport = camera.get_viewport();
-    const Vec2d screen_hit = TransformHelper::world_to_ss(position, projection_view, viewport);
-    double closest_distance_sq = 8.0 * 8.0;
-    const auto& triangle = mesh.indices[facet];
-    for (int i = 0; i < 3; ++i) {
-        const Vec3d vertex = mesh.vertices[triangle[i]].cast<double>();
-        const double distance_sq = (TransformHelper::world_to_ss(vertex, projection_view, viewport) - screen_hit).squaredNorm();
-        if (distance_sq < closest_distance_sq) {
-            closest_distance_sq = distance_sq;
-            pick = {vertex, true};
+    const indexed_triangle_set& mesh = m_measuring->get_its();
+    std::vector<int> candidates;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            const Vec2d probe = mouse_pos + Vec2d(x, y) * (radius * 0.5);
+            if (m_raycaster->unproject_on_mesh(probe, Transform3d::Identity(), camera, hit, normal, nullptr, &facet, false)
+                && facet < mesh.indices.size()) {
+                const auto& triangle = mesh.indices[facet];
+                for (int i = 0; i < 3; ++i)
+                    candidates.push_back(triangle[i]);
+            }
         }
     }
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+    std::optional<CirclePointPick> pick;
+    double closest_distance_sq = radius * radius;
+    for (int index : candidates) {
+        const Vec3d vertex = mesh.vertices[index].cast<double>();
+        const auto screen = measurement_screen_point(vertex, projection_view, viewport);
+        if (!screen)
+            continue;
+        const Vec2d screen_pos(screen->x, screen->y);
+        const double distance_sq = (screen_pos - mouse_pos).squaredNorm();
+        if (distance_sq >= closest_distance_sq)
+            continue;
+        // Reject vertices hidden behind another surface, including the far rim of a hole.
+        // A small pixel tolerance accounts for float ray intersections at triangle edges.
+        if (!m_raycaster->unproject_on_mesh(screen_pos, Transform3d::Identity(), camera, hit, normal, nullptr, nullptr, false)
+            || (hit.cast<double>() - vertex).norm() > 0.25 * camera.get_inv_zoom())
+            continue;
+        closest_distance_sq = distance_sq;
+        pick = CirclePointPick{vertex, true};
+    }
+    // In vertex mode an empty candidate must never silently become a point inside a facet.
     return pick;
 }
 
@@ -1179,11 +1204,13 @@ bool GLGizmoMeasure::on_circle_mouse(const wxMouseEvent& event)
 {
     if (event.LeftDown() && !event.CmdDown()) {
         const auto pick = pick_circle_point(m_mouse_pos);
-        if (!pick)
-            return false;
-        const Vec3d& position = pick->position;
-
         m_mouse_left_down = true;
+        if (!pick) {
+            m_invalid_circle_pick = true;
+            m_parent.request_extra_frame();
+            return true;
+        }
+        const Vec3d& position = pick->position;
         if (m_circle_points.size() < 3) {
             m_invalid_circle_pick = std::any_of(m_circle_points.begin(), m_circle_points.end(),
                 [&](const Vec3d& point) { return (point - position).norm() <= EPSILON; });
@@ -1255,10 +1282,13 @@ void GLGizmoMeasure::render_constructed_circle()
     const Matrix4d projection_view = camera.get_projection_matrix().matrix() * view.matrix();
     const auto& viewport = camera.get_viewport();
     ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
-    for (const Vec3d& point : m_circle_points) {
-        if (const auto screen = measurement_screen_point(point, projection_view, viewport)) {
+    for (size_t i = 0; i < m_circle_points.size(); ++i) {
+        if (const auto screen = measurement_screen_point(m_circle_points[i], projection_view, viewport)) {
             draw_list->AddCircleFilled(*screen, 8.0f, MEASUREMENT_OUTLINE, 24);
             draw_list->AddCircleFilled(*screen, 5.5f, MEASUREMENT_PICKED, 24);
+            const std::string label = std::to_string(i + 1);
+            draw_list->AddText(ImVec2(screen->x + 10.0f, screen->y - 10.0f), MEASUREMENT_OUTLINE, label.c_str());
+            draw_list->AddText(ImVec2(screen->x + 9.0f, screen->y - 11.0f), MEASUREMENT_PICKED, label.c_str());
         }
     }
 
@@ -1488,7 +1518,7 @@ void GLGizmoMeasure::render_dimensioning()
         const bool use_inches = wxGetApp().app_config->get_bool("use_inches");
         const double curr_value = use_inches ? ObjectManipulation::mm_to_in * distance : distance;
         const std::string curr_value_str = format_double(curr_value);
-        const std::string units = use_inches ? _u8L("in") : _u8L("mm");
+        const std::string units = use_inches ? "in" : "mm";
         const float value_str_width = 20.0f + ImGui::CalcTextSize(curr_value_str.c_str()).x;
         static double edit_value = 0.0;
 
@@ -2074,21 +2104,29 @@ void GLGizmoMeasure::render_circle_options()
 {
     if (ImGui::Checkbox(_u8L("Snap to mesh vertices").c_str(), &m_snap_circle_vertices))
         m_parent.request_extra_frame();
+    if (m_snap_circle_vertices)
+        ImGuiPureWrap::text(_u8L("Only visible mesh vertices are accepted. Move closer until the yellow diamond appears."));
     ImGuiPureWrap::text(_u8L("Select three points on the same circular edge.") +
         " (" + std::to_string(m_circle_points.size()) + "/3)");
     if (m_invalid_circle_pick)
-        ImGuiPureWrap::text(_u8L("Choose a different point. Points must be distinct and not nearly collinear."));
+        ImGuiPureWrap::text(_u8L("No valid point selected. Choose a visible vertex; the three points must be distinct and not nearly collinear."));
 
     if (m_constructed_circle) {
         const auto [center, radius, normal] = m_constructed_circle->get_circle();
         const bool use_inches = wxGetApp().app_config->get_bool("use_inches");
         const double scale = use_inches ? ObjectManipulation::mm_to_in : 1.0;
-        const std::string units = use_inches ? " " + _u8L("in") : " " + _u8L("mm");
+        const std::string units = use_inches ? " in" : " mm";
         ImGuiPureWrap::text(_u8L("Diameter") + ": " + format_double(2.0 * radius * scale) + units);
         ImGuiPureWrap::text(_u8L("Radius") + ": " + format_double(radius * scale) + units);
         ImGuiPureWrap::text(_u8L("Circle center") + ": " + format_vec3(center * scale) + units);
     }
 
+    if (!m_circle_points.empty() && ImGuiPureWrap::button(_u8L("Undo last point"))) {
+        m_circle_points.pop_back();
+        m_constructed_circle.reset();
+        m_invalid_circle_pick = false;
+        m_parent.request_extra_frame();
+    }
     if (ImGuiPureWrap::button(_u8L("Restart selection"))) {
         clear_circle_points();
         m_parent.request_extra_frame();
@@ -2296,7 +2334,7 @@ void GLGizmoMeasure::on_render_input_window(float x, float y, float bottom_limit
     }
 
     const bool use_inches = wxGetApp().app_config->get_bool("use_inches");
-    const std::string units = use_inches ? " " + _u8L("in") : " " + _u8L("mm");
+    const std::string units = use_inches ? " in" : " mm";
 
     ImGui::Separator();
     const ImGuiTableFlags flags = ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersH;

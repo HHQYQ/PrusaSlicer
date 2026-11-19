@@ -217,7 +217,8 @@ public:
         Vec3f& position, // where to save the positibon of the hit (mesh coords)
         Vec3f& normal, // normal of the triangle that was hit
         const ClippingPlane* clipping_plane = nullptr, // clipping plane (if active)
-        size_t* facet_idx = nullptr // index of the facet hit
+        size_t* facet_idx = nullptr, // index of the facet hit
+        const ClippingPlane* compound_plane = nullptr // remove only points clipped by both planes
     ) const;
 
     // Given a point in world coords, the method returns closest point on the mesh.

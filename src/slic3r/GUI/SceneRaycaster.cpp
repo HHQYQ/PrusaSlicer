@@ -102,7 +102,8 @@ void SceneRaycaster::remove_raycaster(std::shared_ptr<SceneRaycasterItem> item)
     }
 }
 
-SceneRaycaster::HitResult SceneRaycaster::hit(const Vec2d& mouse_pos, const Camera& camera, const ClippingPlane* clipping_plane) const
+SceneRaycaster::HitResult SceneRaycaster::hit(const Vec2d& mouse_pos, const Camera& camera, const ClippingPlane* clipping_plane,
+    const ClippingPlane* compound_plane) const
 {
     // helper class used to return currently selected volume as hit when overlapping with other volumes
     // to allow the user to click and drag on a selected volume
@@ -157,8 +158,9 @@ SceneRaycaster::HitResult SceneRaycaster::hit(const Vec2d& mouse_pos, const Came
 
     HitResult ret;
 
-    auto test_raycasters = [this, is_closest, clipping_plane, &volume_keeper](EType type, const Vec2d& mouse_pos, const Camera& camera, HitResult& ret) {
+    auto test_raycasters = [this, is_closest, clipping_plane, compound_plane, &volume_keeper](EType type, const Vec2d& mouse_pos, const Camera& camera, HitResult& ret) {
         const ClippingPlane* clip_plane = (clipping_plane != nullptr && type == EType::Volume) ? clipping_plane : nullptr;
+        const ClippingPlane* second_plane = type == EType::Volume ? compound_plane : nullptr;
         const std::vector<std::shared_ptr<SceneRaycasterItem>>* raycasters = get_raycasters(type);
         const Vec3f camera_forward = camera.get_dir_forward().cast<float>();
         HitResult current_hit = { type };
@@ -176,7 +178,7 @@ SceneRaycaster::HitResult SceneRaycaster::hit(const Vec2d& mouse_pos, const Came
                 for (int i = 0; i < s_multiple_beds.get_number_of_beds(); ++i) {
                     trafo = trafo_orig;
                     trafo.translate(s_multiple_beds.get_bed_translation(i));
-                    sth_hit = item->get_raycaster()->closest_hit(mouse_pos, trafo, camera, current_hit.position, current_hit.normal, clip_plane);
+                    sth_hit = item->get_raycaster()->closest_hit(mouse_pos, trafo, camera, current_hit.position, current_hit.normal, clip_plane, nullptr, second_plane);
                     if (sth_hit) {
                         bed_idx_hit = i;
                         break;
@@ -184,7 +186,7 @@ SceneRaycaster::HitResult SceneRaycaster::hit(const Vec2d& mouse_pos, const Came
                 }
                 s_multiple_beds.set_last_hovered_bed(bed_idx_hit);
             } else
-                sth_hit = item->get_raycaster()->closest_hit(mouse_pos, trafo, camera, current_hit.position, current_hit.normal, clip_plane);
+                sth_hit = item->get_raycaster()->closest_hit(mouse_pos, trafo, camera, current_hit.position, current_hit.normal, clip_plane, nullptr, second_plane);
 
             if (sth_hit) {
                 current_hit.position = (trafo * current_hit.position.cast<double>()).cast<float>();
